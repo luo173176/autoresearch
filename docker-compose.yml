@@ -1,0 +1,48 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: autoresearch-db
+    environment:
+      POSTGRES_USER: autoresearch
+      POSTGRES_PASSWORD: autoresearch
+      POSTGRES_DB: autoresearch
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autoresearch -d autoresearch"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    container_name: autoresearch-api
+    command: sh -c "autoresearch init && uvicorn autoresearch.api.main:create_app --factory --host 0.0.0.0 --port 8000"
+    environment:
+      AUTORESEARCH_DATABASE_URL: postgresql://autoresearch:autoresearch@db:5432/autoresearch
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  ui:
+    build: .
+    container_name: autoresearch-ui
+    command: streamlit run src/autoresearch/ui/app.py --server.port 8501 --server.address 0.0.0.0
+    environment:
+      AUTORESEARCH_DATABASE_URL: postgresql://autoresearch:autoresearch@db:5432/autoresearch
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

@@ -1,0 +1,3 @@
+{"id": "q-demo-01", "question": "在文本分类任务上，LoRA 微调与全量微调的准确率差距有多大？", "domain": "NLP", "budget": {"gpu_hours": 2}}
+{"id": "q-demo-02", "question": "图神经网络在表格数据上是否优于 Gradient Boosting？", "domain": "ML", "budget": {"cpu_hours": 1}}
+{"id": "q-demo-03", "question": "检索增强生成（RAG）中，重排模型对端到端 QA 准确率提升多少？", "domain": "IR", "budget": {"gpu_hours": 1}}
