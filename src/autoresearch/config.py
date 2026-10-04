@@ -1,4 +1,5 @@
 """全局配置：pydantic-settings，环境变量前缀 AUTORESEARCH_，支持 .env 文件。"""
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -56,7 +57,10 @@ class Settings(BaseSettings):
     experiment_folds: int = 5
     experiment_seeds: str = "0,1,2"
     experiment_timeout: float = 900.0
-    sandbox_enabled: bool = True  # False = 强制本地执行器（测试/无 Docker 环境）
+    sandbox_enabled: bool = True  # 是否尝试 Docker 沙箱
+    execution_mode: str = "strict"  # strict / safe-local / unsafe-local
+    allow_network: bool = False  # Docker 实验默认无网络
+    max_output_bytes: int = 200_000
     sandbox_cpus: float = 1.0
     sandbox_memory: str = "1g"
     sandbox_image: str = "python:3.12-slim"

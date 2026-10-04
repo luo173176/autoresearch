@@ -1,4 +1,5 @@
 """实验编排：创建（设计+代码生成）、执行（Docker 沙箱/本地兜底）、分析。"""
+
 from __future__ import annotations
 
 import json
@@ -30,9 +31,14 @@ def create_experiment(db, settings: Settings | None = None, *, hypothesis_id: in
     eid = db.insert(
         f"INSERT INTO experiments (hypothesis_id, design, datasets, baselines, metrics, status) "
         f"VALUES ({db.ph}, {db.ph}, {db.ph}, {db.ph}, {db.ph}, {db.ph})",
-        [hypothesis_id, db.dumps(design), db.dumps(design["datasets"]),
-         db.dumps([b["name"] for b in design["baselines"]]), db.dumps(design["metrics"]),
-         "designed"],
+        [
+            hypothesis_id,
+            db.dumps(design),
+            db.dumps(design["datasets"]),
+            db.dumps([b["name"] for b in design["baselines"]]),
+            db.dumps(design["metrics"]),
+            "designed",
+        ],
     )
     workspace = Path(settings.data_dir) / "experiments" / str(eid)
     files = generate_experiment_code(workspace, design, eid)
@@ -43,14 +49,23 @@ def create_experiment(db, settings: Settings | None = None, *, hypothesis_id: in
 def _execute_local(workspace: Path, settings: Settings) -> dict:
     proc = subprocess.run(
         [sys.executable, "main.py", "--config", "config.json", "--output", "results.json"],
-        cwd=workspace, capture_output=True, text=True,
-        timeout=settings.experiment_timeout, encoding="utf-8", errors="replace",
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        timeout=settings.experiment_timeout,
+        encoding="utf-8",
+        errors="replace",
     )
-    return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
+    return {
+        "exit_code": proc.returncode,
+        "stdout": proc.stdout[: settings.max_output_bytes],
+        "stderr": proc.stderr[: settings.max_output_bytes],
+    }
 
 
-def run_experiment(db, settings: Settings | None = None, *, experiment_id: int,
-                   attempts: int = 2) -> dict:
+def run_experiment(
+    db, settings: Settings | None = None, *, experiment_id: int, attempts: int = 2
+) -> dict:
     """执行实验：执行计划 docker → local 逐级降级；失败重试。
 
     Docker 可用但镜像拉取失败（如 registry 不可达）时，自动回退本地执行器。
@@ -64,18 +79,30 @@ def run_experiment(db, settings: Settings | None = None, *, experiment_id: int,
     if not (workspace / "main.py").exists():
         raise LookupError(f"实验 #{experiment_id} 缺少代码包: {workspace}")
 
-    use_docker = settings.sandbox_enabled and is_docker_available()
+    mode = settings.execution_mode.strip().lower()
+    if mode not in {"strict", "safe-local", "unsafe-local"}:
+        raise ValueError("execution_mode 必须是 strict、safe-local 或 unsafe-local")
+
+    docker_available = settings.sandbox_enabled and is_docker_available()
+    if mode == "strict" and not docker_available:
+        raise RuntimeError(
+            "严格执行模式要求 Docker 沙箱可用；请启动 Docker，或仅在开发环境显式设置 "
+            "AUTORESEARCH_EXECUTION_MODE=safe-local"
+        )
+    use_docker = docker_available
     plan: list[str] = []
     if use_docker:
         plan.append("docker")
-    plan.extend(["local"] * max(attempts - len(plan), 1))
+        if mode != "strict":
+            plan.extend(["local"] * max(attempts - len(plan), 1))
+    elif mode in {"safe-local", "unsafe-local"}:
+        plan.extend(["local"] * max(attempts, 1))
     plan = plan[:attempts]
 
     run_id = db.insert(
         f"INSERT INTO runs (experiment_id, code_path, config, status) "
         f"VALUES ({db.ph}, {db.ph}, {db.ph}, {db.ph})",
-        [experiment_id, str(workspace),
-         db.dumps({"executor_plan": plan}), "running"],
+        [experiment_id, str(workspace), db.dumps({"executor_plan": plan}), "running"],
     )
 
     last_error = ""
@@ -83,17 +110,22 @@ def run_experiment(db, settings: Settings | None = None, *, experiment_id: int,
         started = time.perf_counter()
         try:
             if executor == "docker":
-                proc = run_sandboxed(workspace, settings,
-                                     cpus=settings.sandbox_cpus,
-                                     memory=settings.sandbox_memory,
-                                     image=settings.sandbox_image,
-                                     timeout=settings.experiment_timeout)
+                proc = run_sandboxed(
+                    workspace,
+                    settings,
+                    cpus=settings.sandbox_cpus,
+                    memory=settings.sandbox_memory,
+                    image=settings.sandbox_image,
+                    timeout=settings.experiment_timeout,
+                )
                 ok = proc["exit_code"] == 0
                 logs = proc["stdout"] + "\n[stderr]\n" + proc["stderr"]
-            else:
+            elif mode in {"safe-local", "unsafe-local"}:
                 proc = _execute_local(workspace, settings)
                 ok = proc["exit_code"] == 0
                 logs = proc["stdout"] + "\n[stderr]\n" + proc["stderr"]
+            else:  # pragma: no cover - strict + unavailable Docker 在循环前已阻止
+                raise RuntimeError("没有可用的安全执行器")
 
             if ok:
                 results = json.loads((workspace / "results.json").read_text(encoding="utf-8"))
@@ -101,21 +133,43 @@ def run_experiment(db, settings: Settings | None = None, *, experiment_id: int,
                 db.execute(
                     f"UPDATE runs SET status = {db.ph}, metrics = {db.ph}, logs = {db.ph} "
                     f"WHERE id = {db.ph}",
-                    ["completed",
-                     db.dumps({"executor": executor, "attempts_used": attempt,
-                               "elapsed_ms": int((time.perf_counter() - started) * 1000),
-                               "results": results.get("runs", []), "analysis": analysis}),
-                     logs[-20000:], run_id],
+                    [
+                        "completed",
+                        db.dumps(
+                            {
+                                "executor": executor,
+                                "attempts_used": attempt,
+                                "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                                "results": results.get("runs", []),
+                                "analysis": analysis,
+                            }
+                        ),
+                        logs[-20000:],
+                        run_id,
+                    ],
                 )
                 logger.info("实验 #{} run#{} 完成 ({})", experiment_id, run_id, executor)
-                return {"run_id": run_id, "status": "completed", "executor": executor,
-                        "attempt": attempt, "analysis": analysis}
+                return {
+                    "run_id": run_id,
+                    "status": "completed",
+                    "executor": executor,
+                    "attempt": attempt,
+                    "analysis": analysis,
+                }
             last_error = logs[-2000:]
         except Exception as exc:  # 超时/环境错误均计为失败尝试
             last_error = f"{type(exc).__name__}: {exc}"
-        logger.warning("实验 #{} run#{} 第 {} 次尝试({})失败: {}",
-                       experiment_id, run_id, attempt, executor, last_error[:200])
+        logger.warning(
+            "实验 #{} run#{} 第 {} 次尝试({})失败: {}",
+            experiment_id,
+            run_id,
+            attempt,
+            executor,
+            last_error[:200],
+        )
 
-    db.execute(f"UPDATE runs SET status = {db.ph}, logs = {db.ph} WHERE id = {db.ph}",
-               ["failed", f"plan={plan}\nlast_error={last_error}", run_id])
+    db.execute(
+        f"UPDATE runs SET status = {db.ph}, logs = {db.ph} WHERE id = {db.ph}",
+        ["failed", f"plan={plan}\nlast_error={last_error}", run_id],
+    )
     return {"run_id": run_id, "status": "failed", "error": last_error}

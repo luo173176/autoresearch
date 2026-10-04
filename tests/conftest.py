@@ -1,4 +1,5 @@
 """pytest 公共夹具：隔离环境变量，所有资源落在 tmp_path。"""
+
 import os
 
 import pytest
@@ -16,6 +17,7 @@ def test_settings(tmp_path, monkeypatch):
         sqlite_path=tmp_path / "data" / "test.db",
         llm_cache_dir=tmp_path / "data" / "cache" / "llm",
         llm_enabled=False,  # 测试确定性：LLM 相关路径单独用假对象覆盖
+        execution_mode="unsafe-local",  # 测试只运行仓库自生成的受控实验包
     )
 
 
