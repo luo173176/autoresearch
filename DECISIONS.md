@@ -1,4 +1,4 @@
 
-## D-028 M4 自动重试与数据库抢占（2026-10-05）
+## D-029 M5 独立数据库队列 worker（2026-10-05）
 
-M4 在不引入 Redis/Celery 的前提下，将任务执行增强为可重试且跨进程提交安全：每次尝试先通过 `UPDATE ... WHERE status='queued'` 原子抢占，只有更新成功的 worker 执行 handler；临时失败按配置次数和指数退避重新入队，最终失败才进入 failed。手动重试根据 jobs.input 重建 handler，而不是把 Python 闭包序列化进数据库。另提供 Prometheus 文本格式指标出口，便于后续接入监控系统。
+M5 提供 `autoresearch worker` 独立进程，轮询持久化 jobs 队列并根据受控任务类型重建 handler。API 内置执行器继续保留作为本地开发模式；生产部署可以运行多个 worker。执行前的数据库条件更新负责跨进程原子抢占，避免同一任务重复执行。handler 只允许已注册的 literature/graph/hypotheses/experiment_run/report 类型，不从数据库执行任意代码。

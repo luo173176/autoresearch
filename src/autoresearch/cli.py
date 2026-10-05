@@ -1,4 +1,5 @@
 """autoresearch 命令行入口。"""
+
 from __future__ import annotations
 
 import argparse
@@ -25,9 +26,16 @@ def run_init(settings: Settings | None = None) -> int:
     return 0
 
 
-def run_literature(query: str, project: int | None = None, max_results: int | None = None,
-                   sources: str = "arxiv", download_pdfs: bool = False, pdf_limit: int = 10,
-                   use_llm: bool = True, settings: Settings | None = None) -> int:
+def run_literature(
+    query: str,
+    project: int | None = None,
+    max_results: int | None = None,
+    sources: str = "arxiv",
+    download_pdfs: bool = False,
+    pdf_limit: int = 10,
+    use_llm: bool = True,
+    settings: Settings | None = None,
+) -> int:
     """检索文献并入库：缺项目则自动创建；缺 query 时使用项目研究问题。"""
     s = settings or get_settings()
     s.ensure_dirs()
@@ -51,16 +59,26 @@ def run_literature(query: str, project: int | None = None, max_results: int | No
 
     source_list = [x.strip() for x in sources.split(",") if x.strip()]
     summary = run_pipeline(
-        db, s, project=proj, query=query, sources=source_list,
+        db,
+        s,
+        project=proj,
+        query=query,
+        sources=source_list,
         max_results=max_results or s.literature_max_results,
-        download_pdfs=download_pdfs, pdf_limit=pdf_limit, use_llm=use_llm,
+        download_pdfs=download_pdfs,
+        pdf_limit=pdf_limit,
+        use_llm=use_llm,
     )
     print("[literature] 结果:", json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if summary["papers_found"] else 1
 
 
-def run_graph(project: int | None = None, use_llm: bool = True, export: str | None = None,
-              settings: Settings | None = None) -> int:
+def run_graph(
+    project: int | None = None,
+    use_llm: bool = True,
+    export: str | None = None,
+    settings: Settings | None = None,
+) -> int:
     """构建项目知识图谱（缺省取最新项目）；可导出 JSON 子图。"""
     s = settings or get_settings()
     s.ensure_dirs()
@@ -91,8 +109,12 @@ def run_graph(project: int | None = None, use_llm: bool = True, export: str | No
     return 0
 
 
-def run_hypotheses(project: int | None = None, max_hypotheses: int | None = None,
-                   use_llm: bool = True, settings: Settings | None = None) -> int:
+def run_hypotheses(
+    project: int | None = None,
+    max_hypotheses: int | None = None,
+    use_llm: bool = True,
+    settings: Settings | None = None,
+) -> int:
     """基于项目图谱生成假设（缺省取最新项目）。"""
     s = settings or get_settings()
     s.ensure_dirs()
@@ -111,23 +133,26 @@ def run_hypotheses(project: int | None = None, max_hypotheses: int | None = None
         print(f"[hypotheses] 项目 #{project} 不存在")
         return 1
     try:
-        summary = generate_hypotheses(db, s, project_id=project,
-                                      max_hypotheses=max_hypotheses or 50, use_llm=use_llm)
+        summary = generate_hypotheses(
+            db, s, project_id=project, max_hypotheses=max_hypotheses or 50, use_llm=use_llm
+        )
     except ValueError as exc:
         print(f"[hypotheses] {exc}")
         return 1
     print("[hypotheses] 结果:", json.dumps(summary, ensure_ascii=False, indent=2))
     top = db.query(
         f"SELECT statement, novelty FROM hypotheses WHERE project_id = {db.ph} "
-        f"ORDER BY novelty DESC LIMIT 5", [project],
+        f"ORDER BY novelty DESC LIMIT 5",
+        [project],
     )
     for i, row in enumerate(top, 1):
         print(f"[hypotheses] Top{i} (novelty={row['novelty']:.2f}): {row['statement'][:90]}")
     return 0
 
 
-def run_experiment_cmd(hypothesis: int | None = None, run: bool = False,
-                       settings: Settings | None = None) -> int:
+def run_experiment_cmd(
+    hypothesis: int | None = None, run: bool = False, settings: Settings | None = None
+) -> int:
     """由假设生成实验（缺省取 novelty 最高的假设）；--run 直接执行。"""
     s = settings or get_settings()
     s.ensure_dirs()
@@ -173,8 +198,9 @@ def run_run(experiment_id: int, settings: Settings | None = None) -> int:
     return 0 if result["status"] == "completed" else 1
 
 
-def run_report(project: int | None = None, export: str | None = None,
-               settings: Settings | None = None) -> int:
+def run_report(
+    project: int | None = None, export: str | None = None, settings: Settings | None = None
+) -> int:
     """生成项目研究报告（论文初稿，带引用）。"""
     s = settings or get_settings()
     from .db import Database
@@ -193,8 +219,10 @@ def run_report(project: int | None = None, export: str | None = None,
     except LookupError as exc:
         print(f"[report] {exc}")
         return 1
-    print(f"[report] 报告 #{result['report_id']} 已生成（引用 {result['citations_count']} 篇 / "
-          f"图表 {result['figures_count']} 组）")
+    print(
+        f"[report] 报告 #{result['report_id']} 已生成（引用 {result['citations_count']} 篇 / "
+        f"图表 {result['figures_count']} 组）"
+    )
     if export:
         Path(export).parent.mkdir(parents=True, exist_ok=True)
         Path(export).write_text(result["content"], encoding="utf-8")
@@ -204,8 +232,13 @@ def run_report(project: int | None = None, export: str | None = None,
     return 0
 
 
-def run_watch(project: int | None = None, interval: int = 600, once: bool = False,
-              max_results: int = 10, settings: Settings | None = None) -> int:
+def run_watch(
+    project: int | None = None,
+    interval: int = 600,
+    once: bool = False,
+    max_results: int = 10,
+    settings: Settings | None = None,
+) -> int:
     """定时扫描新论文并刷新图谱/假设（--once 单轮，便于测试）。"""
     import time as _time
 
@@ -232,8 +265,10 @@ def run_watch(project: int | None = None, interval: int = 600, once: bool = Fals
         lit = run_pipeline(db, s, project=project_row, max_results=max_results)
         graph = build_graph(db, s, project_id=project)
         hyp = generate_hypotheses(db, s, project_id=project, max_hypotheses=30)
-        print(f"[watch] 轮次完成: 论文+{lit['papers_new']} / 关系+{graph['relations_created']} "
-              f"/ 假设+{hyp['stored']} (db: {db.backend})")
+        print(
+            f"[watch] 轮次完成: 论文+{lit['papers_new']} / 关系+{graph['relations_created']} "
+            f"/ 假设+{hyp['stored']} (db: {db.backend})"
+        )
         if once:
             return 0
         _time.sleep(interval)
@@ -249,8 +284,13 @@ def run_eval_cmd(max_questions: int = 3, settings: Settings | None = None) -> in
     return 0
 
 
-def run_auto(question: str, max_results: int = 30, sources: str = "arxiv",
-             with_experiment: bool = True, settings: Settings | None = None) -> int:
+def run_auto(
+    question: str,
+    max_results: int = 30,
+    sources: str = "arxiv",
+    with_experiment: bool = True,
+    settings: Settings | None = None,
+) -> int:
     """一键全流程：文献 → 图谱 → 假设 → 实验 → 报告。"""
     s = settings or get_settings()
     s.ensure_dirs()
@@ -267,7 +307,8 @@ def run_auto(question: str, max_results: int = 30, sources: str = "arxiv",
     if with_experiment:
         top = db.query_one(
             f"SELECT id FROM hypotheses WHERE project_id = {db.ph} "
-            f"ORDER BY novelty DESC, id LIMIT 1", [pid],
+            f"ORDER BY novelty DESC, id LIMIT 1",
+            [pid],
         )
         if top is None:
             print("[auto] 未生成假设，跳过实验")
@@ -307,7 +348,9 @@ def run_config(test: bool = False, settings: Settings | None = None) -> int:
     return 0
 
 
-def run_serve(host: str | None = None, port: int | None = None, settings: Settings | None = None) -> int:
+def run_serve(
+    host: str | None = None, port: int | None = None, settings: Settings | None = None
+) -> int:
     s = settings or get_settings()
     import uvicorn
 
@@ -327,13 +370,39 @@ def run_ui(port: int | None = None, settings: Settings | None = None) -> int:
     s = settings or get_settings()
     app_path = Path(__file__).resolve().parent / "ui" / "app.py"
     cmd = [
-        sys.executable, "-m", "streamlit", "run", str(app_path),
-        "--server.port", str(port or s.ui_port),
-        "--server.headless", "true",
-        "--browser.gatherUsageStats", "false",
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(app_path),
+        "--server.port",
+        str(port or s.ui_port),
+        "--server.headless",
+        "true",
+        "--browser.gatherUsageStats",
+        "false",
     ]
     print("[ui] Streamlit 启动中:", " ".join(cmd))
     return subprocess.call(cmd)
+
+
+def run_worker(
+    interval: float = 1.0,
+    once: bool = False,
+    workers: int | None = None,
+    batch: int = 20,
+    settings: Settings | None = None,
+) -> int:
+    """运行独立数据库队列 worker，与 API 进程解耦。"""
+    from .worker import run_worker as _run_worker
+
+    return _run_worker(
+        settings or get_settings(),
+        interval=interval,
+        once=once,
+        max_workers=workers,
+        batch_size=batch,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -359,7 +428,9 @@ def main(argv: list[str] | None = None) -> int:
     p_hyp.add_argument("--max", type=int, default=None, help="最多生成的假设条数")
     p_hyp.add_argument("--no-llm", action="store_true", help="禁用 LLM（纯规则模板）")
     p_exp = sub.add_parser("experiment", help="由假设生成实验代码包")
-    p_exp.add_argument("--hypothesis", type=int, default=None, help="假设 ID（缺省取 novelty 最高）")
+    p_exp.add_argument(
+        "--hypothesis", type=int, default=None, help="假设 ID（缺省取 novelty 最高）"
+    )
     p_exp.add_argument("--run", action="store_true", help="生成后立即执行")
     p_run = sub.add_parser("run", help="执行实验")
     p_run.add_argument("experiment_id", type=int)
@@ -383,6 +454,11 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--port", type=int, default=None)
     p_ui = sub.add_parser("ui", help="启动 Streamlit 看板")
     p_ui.add_argument("--port", type=int, default=None)
+    p_worker = sub.add_parser("worker", help="运行独立后台任务 worker")
+    p_worker.add_argument("--interval", type=float, default=1.0, help="队列轮询间隔秒数")
+    p_worker.add_argument("--once", action="store_true", help="处理当前队列后退出")
+    p_worker.add_argument("--workers", type=int, default=None, help="worker 线程数")
+    p_worker.add_argument("--batch", type=int, default=20, help="每轮最多领取任务数")
     sub.add_parser("version", help="打印版本")
 
     args = parser.parse_args(argv)
@@ -390,14 +466,20 @@ def main(argv: list[str] | None = None) -> int:
         return run_init()
     if args.command == "literature":
         return run_literature(
-            args.query, project=args.project, max_results=args.max, sources=args.sources,
-            download_pdfs=args.download_pdfs, pdf_limit=args.pdf_limit, use_llm=not args.no_llm,
+            args.query,
+            project=args.project,
+            max_results=args.max,
+            sources=args.sources,
+            download_pdfs=args.download_pdfs,
+            pdf_limit=args.pdf_limit,
+            use_llm=not args.no_llm,
         )
     if args.command == "graph":
         return run_graph(project=args.project, use_llm=not args.no_llm, export=args.export)
     if args.command == "hypotheses":
-        return run_hypotheses(project=args.project, max_hypotheses=args.max,
-                              use_llm=not args.no_llm)
+        return run_hypotheses(
+            project=args.project, max_hypotheses=args.max, use_llm=not args.no_llm
+        )
     if args.command == "experiment":
         return run_experiment_cmd(hypothesis=args.hypothesis, run=args.run)
     if args.command == "run":
@@ -411,12 +493,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "config":
         return run_config(test=args.test)
     if args.command == "auto":
-        return run_auto(args.question, max_results=args.max, sources=args.sources,
-                        with_experiment=not args.no_experiment)
+        return run_auto(
+            args.question,
+            max_results=args.max,
+            sources=args.sources,
+            with_experiment=not args.no_experiment,
+        )
     if args.command == "serve":
         return run_serve(args.host, args.port)
     if args.command == "ui":
         return run_ui(args.port)
+    if args.command == "worker":
+        return run_worker(args.interval, args.once, args.workers, args.batch)
     if args.command == "version":
         print(f"AutoResearch {__version__}")
         return 0

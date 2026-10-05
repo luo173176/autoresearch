@@ -31,6 +31,8 @@ jobs:
           src/autoresearch/config.py
           src/autoresearch/db.py
           src/autoresearch/jobs.py
+          src/autoresearch/worker.py
+          src/autoresearch/cli.py
           src/autoresearch/security.py
           src/autoresearch/schemas.py
           src/autoresearch/api/main.py
@@ -41,6 +43,7 @@ jobs:
           tests/test_experiments.py
           tests/test_m3_resilience.py
           tests/test_m4_jobs.py
+          tests/test_m5_worker.py
           --select E4,E7,E9,F --ignore E501,F401,F811,I001
       - name: Format check
         run: >-
@@ -48,6 +51,8 @@ jobs:
           src/autoresearch/config.py
           src/autoresearch/db.py
           src/autoresearch/jobs.py
+          src/autoresearch/worker.py
+          src/autoresearch/cli.py
           src/autoresearch/security.py
           src/autoresearch/schemas.py
           src/autoresearch/api/main.py
@@ -58,6 +63,7 @@ jobs:
           tests/test_experiments.py
           tests/test_m3_resilience.py
           tests/test_m4_jobs.py
+          tests/test_m5_worker.py
       - name: Tests
         run: pytest
 

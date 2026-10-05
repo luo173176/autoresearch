@@ -134,6 +134,7 @@ docker compose up -d --build
 |---|---|
 | `autoresearch init` | 创建数据目录并执行迁移 |
 | `autoresearch serve` | 启动 FastAPI |
+| `autoresearch worker` | 启动独立数据库队列 worker |
 | `autoresearch ui` | 启动 Streamlit 看板 |
 | `autoresearch literature "问题"` | 检索、去重、入库和分块 |
 | `autoresearch graph` | 构建知识图谱 |
@@ -239,6 +240,23 @@ curl -X POST http://127.0.0.1:8000/jobs/1/retry
 任务状态包括 `queued`、`running`、`succeeded`、`failed` 和 `cancelled`。重复提交同一个 `Idempotency-Key` 会复用原任务，不会重复消耗检索或模型资源。M2 的进程内任务执行器在 M3 增加了 worker 标识、尝试次数、心跳和重启恢复：服务重启时遗留的 `queued/running` 任务会被明确标记为 `failed/interrupted`，不会永久停留在运行中。
 
 M4 增加自动重试和指数退避；任务执行前使用数据库条件更新抢占，多个 API worker 同时提交同一任务时只允许一个 worker 真正执行。`failed` 或 `cancelled` 任务可以通过 `POST /jobs/{id}/retry` 手动重新入队。监控系统可抓取 `GET /metrics/prometheus`，获取 Prometheus 文本格式的请求数、失败数和活动任务数。
+
+### 独立 Worker（M5）
+
+生产环境可以把 API 和任务执行拆成两个进程，共享同一个 PostgreSQL 或 SQLite 数据库：
+
+```bash
+autoresearch serve --host 0.0.0.0 --port 8000
+autoresearch worker --workers 4 --interval 1
+```
+
+worker 会轮询 `jobs.status = 'queued'`，根据持久化的任务类型和输入重建 handler，再通过数据库原子抢占执行。多个 worker 可以并行运行；同一任务只会被一个 worker 成功领取。`--once` 适合容器 Job、部署探针和一次性清空当前队列：
+
+```bash
+autoresearch worker --once --batch 50
+```
+
+API 内置执行器仍然保留，适合本地开发；独立 worker 是 M5 推荐的生产部署模式。
 
 ### API 安全与请求追踪
 
