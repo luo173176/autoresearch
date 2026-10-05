@@ -157,6 +157,10 @@ docker compose up -d --build
 | `SANDBOX_ENABLED` | `true` | 是否尝试 Docker |
 | `ALLOW_NETWORK` | `false` | Docker 实验是否允许网络 |
 | `MAX_OUTPUT_BYTES` | `200000` | 单次 stdout/stderr 最大保存量 |
+| `API_KEY` | 空 | 非空时要求 `X-API-Key` 或 `Authorization: Bearer ...` |
+| `JOB_MAX_WORKERS` | `2` | 进程内后台任务并发数 |
+| `JOB_MAX_ATTEMPTS` | `1` | 任务执行尝试上限 |
+| `JOB_STALE_AFTER_SECONDS` | `300` | 任务心跳告警阈值 |
 | `SANDBOX_CPUS` | `1.0` | Docker CPU 限制 |
 | `SANDBOX_MEMORY` | `1g` | Docker 内存限制 |
 | `SANDBOX_IMAGE` | `python:3.12-slim` | 实验沙箱镜像 |
@@ -202,6 +206,7 @@ docker compose up -d --build
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/health` | 服务和数据库健康检查 |
+| `GET` | `/metrics` | 请求数、失败数和活动任务数 |
 | `POST` | `/projects` | 创建项目 |
 | `POST` | `/projects/{id}/literature` | 检索文献并抽取 chunks |
 | `POST` | `/projects/{id}/graph` | 构建项目图谱 |
@@ -229,7 +234,19 @@ curl 'http://127.0.0.1:8000/jobs?project_id=1&status=running'
 curl -X POST http://127.0.0.1:8000/jobs/1/cancel
 ```
 
-任务状态包括 `queued`、`running`、`succeeded`、`failed` 和 `cancelled`。重复提交同一个 `Idempotency-Key` 会复用原任务，不会重复消耗检索或模型资源。当前 M2 使用进程内任务执行器；任务状态持久化在数据库，服务重启后的外部队列接入留在后续阶段。
+任务状态包括 `queued`、`running`、`succeeded`、`failed` 和 `cancelled`。重复提交同一个 `Idempotency-Key` 会复用原任务，不会重复消耗检索或模型资源。M2 的进程内任务执行器在 M3 增加了 worker 标识、尝试次数、心跳和重启恢复：服务重启时遗留的 `queued/running` 任务会被明确标记为 `failed/interrupted`，不会永久停留在运行中。
+
+### API 安全与请求追踪
+
+本地开发时 `AUTORESEARCH_API_KEY` 为空，保持免鉴权。部署到共享或公网环境时应设置随机 API Key；`/health` 仍可用于探活，业务路由和 `/metrics` 需要携带以下任一请求头：
+
+```bash
+curl -H 'X-API-Key: change-me' http://127.0.0.1:8000/projects
+# 或
+curl -H 'Authorization: Bearer change-me' http://127.0.0.1:8000/projects
+```
+
+每个响应都会返回 `X-Request-ID` 和 `X-Process-Time-ms`。客户端可以传入自己的 `X-Request-ID`，便于把 API 日志与前端或网关日志关联。
 
 完整可交互文档启动后访问 `/docs`。
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -34,9 +35,23 @@ class JobManager:
         )
         self._futures: dict[int, Future[Any]] = {}
         self._lock = threading.Lock()
+        self.worker_id = f"worker-{uuid.uuid4().hex[:12]}"
 
     def close(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=True)
+
+    def recover(self, db: Database) -> int:
+        """将上次进程遗留的未完成任务标记为可诊断的失败状态。"""
+        try:
+            return db.execute(
+                f"UPDATE jobs SET status = {db.ph}, current_step = {db.ph}, "
+                f"error = {db.ph}, finished_at = {db.ph} "
+                f"WHERE status IN ('queued', 'running')",
+                ["failed", "interrupted", "服务重启，中断了未完成任务", _now()],
+            )
+        except Exception as exc:
+            logger.debug("任务恢复跳过（jobs 表尚未迁移）: {}", exc)
+            return 0
 
     def create(
         self,
@@ -100,29 +115,32 @@ class JobManager:
         try:
             db.execute(
                 f"UPDATE jobs SET status = {db.ph}, progress = {db.ph}, current_step = {db.ph}, "
-                f"started_at = {db.ph} WHERE id = {db.ph} AND status = 'queued'",
-                ["running", 1, "starting", _now(), job_id],
+                f"started_at = {db.ph}, heartbeat_at = {db.ph}, worker_id = {db.ph}, "
+                f"attempt_count = attempt_count + 1 WHERE id = {db.ph} AND status = 'queued'",
+                ["running", 1, "starting", _now(), _now(), self.worker_id, job_id],
             )
 
             def update(progress: int, step: str) -> None:
                 db.execute(
                     f"UPDATE jobs SET progress = {db.ph}, current_step = {db.ph} "
-                    f"WHERE id = {db.ph} AND status = 'running'",
-                    [max(0, min(100, int(progress))), step[:200], job_id],
+                    f", heartbeat_at = {db.ph} WHERE id = {db.ph} AND status = 'running'",
+                    [max(0, min(100, int(progress))), step[:200], _now(), job_id],
                 )
 
             result = fn(db, update)
             db.execute(
                 f"UPDATE jobs SET status = {db.ph}, progress = 100, current_step = {db.ph}, "
-                f"output = {db.ph}, finished_at = {db.ph} WHERE id = {db.ph} AND status = 'running'",
-                ["succeeded", "completed", db.dumps(result), _now(), job_id],
+                f"output = {db.ph}, heartbeat_at = {db.ph}, finished_at = {db.ph} "
+                f"WHERE id = {db.ph} AND status = 'running'",
+                ["succeeded", "completed", db.dumps(result), _now(), _now(), job_id],
             )
         except Exception as exc:
             logger.exception("后台任务 #{} 失败", job_id)
             db.execute(
                 f"UPDATE jobs SET status = {db.ph}, current_step = {db.ph}, error = {db.ph}, "
-                f"finished_at = {db.ph} WHERE id = {db.ph} AND status IN ('queued', 'running')",
-                ["failed", "failed", f"{type(exc).__name__}: {exc}"[:4000], _now(), job_id],
+                f"heartbeat_at = {db.ph}, finished_at = {db.ph} "
+                f"WHERE id = {db.ph} AND status IN ('queued', 'running')",
+                ["failed", "failed", f"{type(exc).__name__}: {exc}"[:4000], _now(), _now(), job_id],
             )
 
     @staticmethod

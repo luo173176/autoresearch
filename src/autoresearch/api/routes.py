@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 
 from ..db import Database
 from ..experiments import create_experiment, run_experiment
@@ -10,6 +10,7 @@ from ..graph import build_graph, export_graph
 from ..hypotheses import generate_hypotheses
 from ..literature import run_pipeline
 from ..reporting import generate_report
+from ..security import require_api_key
 from ..schemas import (
     GraphBuildRequest,
     GraphBuildSummary,
@@ -25,7 +26,7 @@ from ..schemas import (
     ProjectOut,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_key)])
 
 
 def _db(request: Request) -> Database:

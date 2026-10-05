@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import threading
+import time
+import uuid
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
+from loguru import logger
 
 from ..config import Settings, get_settings
 from ..db import Database
 from ..jobs import JobManager
 from ..schemas import HealthOut
+from ..security import require_api_key
 from .routes import router
 
 
@@ -25,6 +30,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.db = db
     app.state.settings = settings
     app.state.jobs = jobs
+    recovered = jobs.recover(db)
+    if recovered:
+        logger.warning("recovered {} interrupted background jobs", recovered)
+    app.state.metrics = {"requests_total": 0, "requests_failed": 0, "jobs_submitted": 0}
+    app.state.metrics_lock = threading.Lock()
+
+    @app.middleware("http")
+    async def request_observability(request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            with app.state.metrics_lock:
+                app.state.metrics["requests_failed"] += 1
+            logger.exception("request failed request_id={} path={}", request_id, request.url.path)
+            raise
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        with app.state.metrics_lock:
+            app.state.metrics["requests_total"] += 1
+            if response.status_code >= 500:
+                app.state.metrics["requests_failed"] += 1
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Process-Time-ms"] = str(elapsed_ms)
+        logger.info(
+            "request request_id={} method={} path={} status={} elapsed_ms={}",
+            request_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed_ms,
+        )
+        return response
 
     @app.on_event("shutdown")
     def shutdown_jobs() -> None:
@@ -41,6 +79,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             database=ok,
             time=datetime.now(timezone.utc),
         )
+
+    @app.get("/metrics", dependencies=[Depends(require_api_key)], tags=["meta"])
+    def metrics() -> dict:
+        with app.state.metrics_lock:
+            values = dict(app.state.metrics)
+        try:
+            values["jobs_active"] = db.scalar(
+                "SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')"
+            )
+        except Exception:
+            values["jobs_active"] = 0
+        return values
 
     app.include_router(router)
     return app

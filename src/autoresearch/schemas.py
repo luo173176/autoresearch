@@ -35,6 +35,9 @@ class JobOut(BaseModel):
     output: dict[str, Any] | None = None
     error: str | None = None
     idempotency_key: str | None = None
+    attempt_count: int = 0
+    heartbeat_at: datetime | str | None = None
+    worker_id: str | None = None
     created_at: datetime | str | None = None
     started_at: datetime | str | None = None
     finished_at: datetime | str | None = None
