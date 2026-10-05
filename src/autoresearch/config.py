@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     execution_mode: str = "strict"  # strict / safe-local / unsafe-local
     allow_network: bool = False  # Docker 实验默认无网络
     max_output_bytes: int = 200_000
+    job_max_workers: int = 2
     sandbox_cpus: float = 1.0
     sandbox_memory: str = "1g"
     sandbox_image: str = "python:3.12-slim"

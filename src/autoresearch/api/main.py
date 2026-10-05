@@ -1,4 +1,5 @@
 """FastAPI 应用工厂。"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -7,6 +8,7 @@ from fastapi import FastAPI
 
 from ..config import Settings, get_settings
 from ..db import Database
+from ..jobs import JobManager
 from ..schemas import HealthOut
 from .routes import router
 
@@ -19,8 +21,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description="自主科研与实验平台：文献 → 图谱 → 假设 → 实验 → 报告",
     )
     db = Database(settings)
+    jobs = JobManager(settings, max_workers=settings.job_max_workers)
     app.state.db = db
     app.state.settings = settings
+    app.state.jobs = jobs
+
+    @app.on_event("shutdown")
+    def shutdown_jobs() -> None:
+        jobs.close()
 
     @app.get("/health", response_model=HealthOut, tags=["meta"])
     def health() -> HealthOut:

@@ -213,6 +213,24 @@ docker compose up -d --build
 | `POST` | `/projects/{id}/report` | 生成研究报告 |
 | `GET` | `/reports/{id}` | 获取报告 |
 
+### 长任务异步执行
+
+文献、图谱、假设、实验执行和报告接口都支持 `background=true`。异步请求返回 `202` 和任务 ID，原有不带该参数的同步调用保持兼容：
+
+```bash
+curl -X POST \
+  'http://127.0.0.1:8000/projects/1/literature?background=true' \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: literature-project-1-v1' \
+  -d '{"query":"retrieval augmented generation","max_results":10}'
+
+curl http://127.0.0.1:8000/jobs/1
+curl 'http://127.0.0.1:8000/jobs?project_id=1&status=running'
+curl -X POST http://127.0.0.1:8000/jobs/1/cancel
+```
+
+任务状态包括 `queued`、`running`、`succeeded`、`failed` 和 `cancelled`。重复提交同一个 `Idempotency-Key` 会复用原任务，不会重复消耗检索或模型资源。当前 M2 使用进程内任务执行器；任务状态持久化在数据库，服务重启后的外部队列接入留在后续阶段。
+
 完整可交互文档启动后访问 `/docs`。
 
 ## 测试与质量检查

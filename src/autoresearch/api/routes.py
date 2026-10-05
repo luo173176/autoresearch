@@ -1,7 +1,8 @@
 """API 路由：projects/literature/graph/hypotheses/experiments/reports 全链路真实实现。"""
+
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request, Response
 
 from ..db import Database
 from ..experiments import create_experiment, run_experiment
@@ -15,6 +16,8 @@ from ..schemas import (
     HypothesisGenerateRequest,
     HypothesisGenerateSummary,
     HypothesisOut,
+    JobAccepted,
+    JobOut,
     LiteratureRequest,
     LiteratureSummary,
     PaperOut,
@@ -27,6 +30,87 @@ router = APIRouter()
 
 def _db(request: Request) -> Database:
     return request.app.state.db
+
+
+def _submit_background(
+    request: Request,
+    *,
+    job_type: str,
+    project_id: int | None,
+    payload: dict,
+    fn,
+    idempotency_key: str | None,
+    response: Response | None = None,
+) -> dict:
+    if response is not None:
+        response.status_code = 202
+    jobs = request.app.state.jobs
+    job, reused = jobs.create(
+        _db(request),
+        job_type=job_type,
+        project_id=project_id,
+        payload=payload,
+        idempotency_key=idempotency_key,
+    )
+    if not reused or job["status"] == "queued":
+        jobs.submit(_db(request), job, fn)
+    return {
+        "job_id": job["id"],
+        "status": job["status"],
+        "type": job_type,
+        "poll_url": f"/jobs/{job['id']}",
+    }
+
+
+def _run_literature_job(db, settings, project, payload, update) -> dict:
+    update(10, "searching")
+    result = run_pipeline(
+        db,
+        settings,
+        project=project,
+        query=payload.query,
+        sources=payload.sources,
+        max_results=payload.max_results,
+        download_pdfs=payload.download_pdfs,
+        pdf_limit=payload.pdf_limit,
+        use_llm=payload.use_llm,
+    )
+    update(100, "literature_completed")
+    return result
+
+
+def _run_graph_job(db, settings, project_id, payload, update) -> dict:
+    update(10, "extracting_graph")
+    result = build_graph(db, settings, project_id=project_id, use_llm=payload.use_llm)
+    update(100, "graph_completed")
+    return result
+
+
+def _run_hypotheses_job(db, settings, project_id, payload, update) -> dict:
+    update(10, "generating_hypotheses")
+    result = generate_hypotheses(
+        db,
+        settings,
+        project_id=project_id,
+        max_hypotheses=payload.max_hypotheses,
+        use_llm=payload.use_llm,
+    )
+    update(100, "hypotheses_completed")
+    return result
+
+
+def _run_experiment_job(db, settings, experiment_id, update) -> dict:
+    update(10, "running_experiment")
+    result = run_experiment(db, settings, experiment_id=experiment_id)
+    update(100, "experiment_completed")
+    return result
+
+
+def _run_report_job(db, settings, project_id, update) -> dict:
+    update(10, "generating_report")
+    result = generate_report(db, settings, project_id=project_id)
+    update(100, "report_completed")
+    return result
 
 
 # ---------- 项目 ----------
@@ -57,14 +141,36 @@ def get_project(project_id: int, request: Request) -> dict:
 
 
 # ---------- 文献（阶段 1） ----------
-@router.post("/projects/{project_id}/literature", response_model=LiteratureSummary,
-             tags=["literature"])
-def run_literature(project_id: int, payload: LiteratureRequest, request: Request) -> dict:
+@router.post(
+    "/projects/{project_id}/literature",
+    response_model=LiteratureSummary | JobAccepted,
+    tags=["literature"],
+)
+def run_literature(
+    project_id: int,
+    payload: LiteratureRequest,
+    request: Request,
+    background: bool = False,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    response: Response = None,
+) -> dict:
     """检索文献 → 去重入库 → 项目关联 → 分块抽取（同步执行，耗时可传 download_pdfs=False 降低）。"""
     db = _db(request)
     project = db.query_one(f"SELECT * FROM projects WHERE id = {db.ph}", [project_id])
     if project is None:
         raise HTTPException(status_code=404, detail="项目不存在")
+    if background:
+        return _submit_background(
+            request,
+            job_type="literature",
+            project_id=project_id,
+            payload={"project_id": project_id, **payload.model_dump()},
+            idempotency_key=idempotency_key,
+            response=response,
+            fn=lambda job_db, update: _run_literature_job(
+                job_db, request.app.state.settings, project, payload, update
+            ),
+        )
     return run_pipeline(
         db,
         request.app.state.settings,
@@ -78,8 +184,7 @@ def run_literature(project_id: int, payload: LiteratureRequest, request: Request
     )
 
 
-@router.get("/projects/{project_id}/papers", response_model=list[PaperOut],
-            tags=["literature"])
+@router.get("/projects/{project_id}/papers", response_model=list[PaperOut], tags=["literature"])
 def list_project_papers(project_id: int, request: Request) -> list[dict]:
     db = _db(request)
     if db.query_one(f"SELECT id FROM projects WHERE id = {db.ph}", [project_id]) is None:
@@ -92,16 +197,37 @@ def list_project_papers(project_id: int, request: Request) -> list[dict]:
 
 
 # ---------- 知识图谱（阶段 2） ----------
-@router.post("/projects/{project_id}/graph", response_model=GraphBuildSummary,
-             tags=["graph"])
-def build_project_graph(project_id: int, payload: GraphBuildRequest, request: Request) -> dict:
+@router.post(
+    "/projects/{project_id}/graph", response_model=GraphBuildSummary | JobAccepted, tags=["graph"]
+)
+def build_project_graph(
+    project_id: int,
+    payload: GraphBuildRequest,
+    request: Request,
+    background: bool = False,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    response: Response = None,
+) -> dict:
     """对项目已入库的 chunks 构建知识图谱（幂等，可重复执行）。"""
     db = _db(request)
     if db.query_one(f"SELECT id FROM projects WHERE id = {db.ph}", [project_id]) is None:
         raise HTTPException(status_code=404, detail="项目不存在")
+    if background:
+        return _submit_background(
+            request,
+            job_type="graph",
+            project_id=project_id,
+            payload={"project_id": project_id, **payload.model_dump()},
+            idempotency_key=idempotency_key,
+            response=response,
+            fn=lambda job_db, update: _run_graph_job(
+                job_db, request.app.state.settings, project_id, payload, update
+            ),
+        )
     try:
-        return build_graph(db, request.app.state.settings, project_id=project_id,
-                           use_llm=payload.use_llm)
+        return build_graph(
+            db, request.app.state.settings, project_id=project_id, use_llm=payload.use_llm
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
@@ -116,26 +242,51 @@ def get_project_graph(project_id: int, request: Request) -> dict:
 
 
 # ---------- 假设生成（阶段 3） ----------
-@router.post("/projects/{project_id}/hypotheses", response_model=HypothesisGenerateSummary,
-             tags=["hypotheses"])
-def generate_project_hypotheses(project_id: int, payload: HypothesisGenerateRequest,
-                                request: Request) -> dict:
+@router.post(
+    "/projects/{project_id}/hypotheses",
+    response_model=HypothesisGenerateSummary | JobAccepted,
+    tags=["hypotheses"],
+)
+def generate_project_hypotheses(
+    project_id: int,
+    payload: HypothesisGenerateRequest,
+    request: Request,
+    background: bool = False,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    response: Response = None,
+) -> dict:
     """从项目图谱（矛盾/缺口/方法组合）生成假设并幂等入库。"""
     db = _db(request)
     if db.query_one(f"SELECT id FROM projects WHERE id = {db.ph}", [project_id]) is None:
         raise HTTPException(status_code=404, detail="项目不存在")
+    if background:
+        return _submit_background(
+            request,
+            job_type="hypotheses",
+            project_id=project_id,
+            payload={"project_id": project_id, **payload.model_dump()},
+            idempotency_key=idempotency_key,
+            response=response,
+            fn=lambda job_db, update: _run_hypotheses_job(
+                job_db, request.app.state.settings, project_id, payload, update
+            ),
+        )
     try:
-        return generate_hypotheses(db, request.app.state.settings, project_id=project_id,
-                                   max_hypotheses=payload.max_hypotheses,
-                                   use_llm=payload.use_llm)
+        return generate_hypotheses(
+            db,
+            request.app.state.settings,
+            project_id=project_id,
+            max_hypotheses=payload.max_hypotheses,
+            use_llm=payload.use_llm,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
 
-@router.get("/projects/{project_id}/hypotheses", response_model=list[HypothesisOut],
-            tags=["hypotheses"])
-def list_project_hypotheses(project_id: int, request: Request,
-                            limit: int = 100) -> list[dict]:
+@router.get(
+    "/projects/{project_id}/hypotheses", response_model=list[HypothesisOut], tags=["hypotheses"]
+)
+def list_project_hypotheses(project_id: int, request: Request, limit: int = 100) -> list[dict]:
     db = _db(request)
     if db.query_one(f"SELECT id FROM projects WHERE id = {db.ph}", [project_id]) is None:
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -156,10 +307,37 @@ def design_experiment(hypothesis_id: int, request: Request) -> dict:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
-@router.post("/experiments/{experiment_id}/run", tags=["experiments"])
-def run_experiment_endpoint(experiment_id: int, request: Request) -> dict:
+@router.post(
+    "/experiments/{experiment_id}/run", response_model=dict | JobAccepted, tags=["experiments"]
+)
+def run_experiment_endpoint(
+    experiment_id: int,
+    request: Request,
+    background: bool = False,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    response: Response = None,
+) -> dict:
     """执行实验（Docker 沙箱可用则沙箱执行，否则本地兜底；失败自动重试）。"""
     db = _db(request)
+    exp = db.query_one(
+        f"SELECT e.id, h.project_id FROM experiments e JOIN hypotheses h ON h.id = e.hypothesis_id "
+        f"WHERE e.id = {db.ph}",
+        [experiment_id],
+    )
+    if exp is None:
+        raise HTTPException(status_code=404, detail="实验不存在")
+    if background:
+        return _submit_background(
+            request,
+            job_type="experiment_run",
+            project_id=exp["project_id"],
+            payload={"experiment_id": experiment_id},
+            idempotency_key=idempotency_key,
+            response=response,
+            fn=lambda job_db, update: _run_experiment_job(
+                job_db, request.app.state.settings, experiment_id, update
+            ),
+        )
     try:
         return run_experiment(db, request.app.state.settings, experiment_id=experiment_id)
     except LookupError as exc:
@@ -174,16 +352,37 @@ def get_experiment(experiment_id: int, request: Request) -> dict:
         raise HTTPException(status_code=404, detail="实验不存在")
     runs = db.query(
         f"SELECT id, status, config, metrics, logs FROM runs WHERE experiment_id = {db.ph} "
-        f"ORDER BY id DESC", [experiment_id],
+        f"ORDER BY id DESC",
+        [experiment_id],
     )
     return {"experiment": exp, "runs": runs}
 
 
 # ---------- 报告（阶段 6） ----------
-@router.post("/projects/{project_id}/report", tags=["reports"])
-def create_report(project_id: int, request: Request) -> dict:
+@router.post("/projects/{project_id}/report", response_model=dict | JobAccepted, tags=["reports"])
+def create_report(
+    project_id: int,
+    request: Request,
+    background: bool = False,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    response: Response = None,
+) -> dict:
     """汇总项目全链路产出，生成带引用的论文初稿（幂等：每次生成新版本）。"""
     db = _db(request)
+    if db.query_one(f"SELECT id FROM projects WHERE id = {db.ph}", [project_id]) is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if background:
+        return _submit_background(
+            request,
+            job_type="report",
+            project_id=project_id,
+            payload={"project_id": project_id},
+            idempotency_key=idempotency_key,
+            response=response,
+            fn=lambda job_db, update: _run_report_job(
+                job_db, request.app.state.settings, project_id, update
+            ),
+        )
     try:
         return generate_report(db, request.app.state.settings, project_id=project_id)
     except LookupError as exc:
@@ -196,4 +395,43 @@ def get_report(report_id: int, request: Request) -> dict:
     row = db.query_one(f"SELECT * FROM reports WHERE id = {db.ph}", [report_id])
     if row is None:
         raise HTTPException(status_code=404, detail="报告不存在")
+    return row
+
+
+# ---------- 后台任务（阶段 8） ----------
+@router.get("/jobs", response_model=list[JobOut], tags=["jobs"])
+def list_jobs(
+    request: Request, project_id: int | None = None, status: str | None = None, limit: int = 50
+) -> list[dict]:
+    db = _db(request)
+    limit = max(1, min(limit, 200))
+    clauses: list[str] = []
+    params: list = []
+    if project_id is not None:
+        clauses.append(f"project_id = {db.ph}")
+        params.append(project_id)
+    if status:
+        clauses.append(f"status = {db.ph}")
+        params.append(status)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+    return db.query(f"SELECT * FROM jobs{where} ORDER BY id DESC LIMIT {db.ph}", params)
+
+
+@router.get("/jobs/{job_id}", response_model=JobOut, tags=["jobs"])
+def get_job(job_id: int, request: Request) -> dict:
+    row = _db(request).query_one(f"SELECT * FROM jobs WHERE id = {_db(request).ph}", [job_id])
+    if row is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return row
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=JobOut, tags=["jobs"])
+def cancel_job(job_id: int, request: Request) -> dict:
+    db = _db(request)
+    row = request.app.state.jobs.cancel(db, job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if row["status"] == "running":
+        raise HTTPException(status_code=409, detail="任务已开始运行，只能等待其完成")
     return row

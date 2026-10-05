@@ -1,4 +1,5 @@
 """Pydantic 请求/响应模型（API 层）。"""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -14,6 +15,29 @@ class HealthOut(BaseModel):
     backend: str
     database: bool
     time: datetime
+
+
+class JobAccepted(BaseModel):
+    job_id: int
+    status: str
+    type: str
+    poll_url: str
+
+
+class JobOut(BaseModel):
+    id: int
+    project_id: int | None = None
+    type: str
+    status: str
+    progress: int
+    current_step: str
+    input: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] | None = None
+    error: str | None = None
+    idempotency_key: str | None = None
+    created_at: datetime | str | None = None
+    started_at: datetime | str | None = None
+    finished_at: datetime | str | None = None
 
 
 class ProjectCreate(BaseModel):

@@ -5,6 +5,7 @@
   SQLite 存 TEXT，由本层按 JSON_COLUMNS 白名单在读取时反序列化
 - 占位符差异：psycopg 用 %s，sqlite3 用 ?，统一通过 db.ph 引用
 """
+
 from __future__ import annotations
 
 import json
@@ -26,11 +27,26 @@ except ImportError:  # pragma: no cover
 POSTGRES_SCHEMES = ("postgres://", "postgresql://", "postgresql+")
 
 # 这些列在 SQLite 中存 JSON 字符串，读取时反序列化；PostgreSQL 为 JSONB 直接得到 dict
-JSON_COLUMNS = frozenset({
-    "budget", "authors", "metadata", "keywords", "entities", "evidence",
-    "testability", "design", "datasets", "baselines", "metrics", "config",
-    "citations", "figures",
-})
+JSON_COLUMNS = frozenset(
+    {
+        "budget",
+        "authors",
+        "metadata",
+        "keywords",
+        "entities",
+        "evidence",
+        "testability",
+        "design",
+        "datasets",
+        "baselines",
+        "metrics",
+        "config",
+        "citations",
+        "figures",
+        "input",
+        "output",
+    }
+)
 
 
 class Database:
@@ -99,8 +115,9 @@ class Database:
             cur = conn.execute(sql, self._adapt(params or []))
             return int(cur.lastrowid)
 
-    def insert_ignore(self, sql_rest: str, params: Sequence[Any] | None = None,
-                      conflict_cols: str = "") -> int | None:
+    def insert_ignore(
+        self, sql_rest: str, params: Sequence[Any] | None = None, conflict_cols: str = ""
+    ) -> int | None:
         """插入（冲突跳过）。sql_rest 以 'INTO ...' 开头；冲突返回 None，否则返回自增 id。
 
         - PostgreSQL: INSERT ... ON CONFLICT (conflict_cols) DO NOTHING RETURNING id
