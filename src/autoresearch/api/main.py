@@ -7,7 +7,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Response
 from loguru import logger
 
 from ..config import Settings, get_settings
@@ -91,6 +91,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:
             values["jobs_active"] = 0
         return values
+
+    @app.get("/metrics/prometheus", dependencies=[Depends(require_api_key)], tags=["meta"])
+    def metrics_prometheus() -> Response:
+        with app.state.metrics_lock:
+            values = dict(app.state.metrics)
+        try:
+            values["jobs_active"] = db.scalar(
+                "SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')"
+            )
+        except Exception:
+            values["jobs_active"] = 0
+        body = (
+            "\n".join(f"autoresearch_{key} {int(value)}" for key, value in sorted(values.items()))
+            + "\n"
+        )
+        return Response(content=body, media_type="text/plain; version=0.0.4")
 
     app.include_router(router)
     return app

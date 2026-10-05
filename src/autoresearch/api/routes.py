@@ -114,6 +114,38 @@ def _run_report_job(db, settings, project_id, update) -> dict:
     return result
 
 
+def _handler_for_job(request: Request, job: dict):
+    """从 jobs.input 重建可重试任务，避免把 Python 闭包持久化到数据库。"""
+    payload = job.get("input") or {}
+    job_type = job["type"]
+    settings = request.app.state.settings
+    db = _db(request)
+    if job_type == "literature":
+        project_id = int(payload["project_id"])
+        project = db.query_one(f"SELECT * FROM projects WHERE id = {db.ph}", [project_id])
+        if project is None:
+            raise HTTPException(status_code=404, detail="任务所属项目不存在")
+        data = LiteratureRequest.model_validate(payload)
+        return lambda job_db, update: _run_literature_job(job_db, settings, project, data, update)
+    if job_type == "graph":
+        data = GraphBuildRequest.model_validate(payload)
+        return lambda job_db, update: _run_graph_job(
+            job_db, settings, int(payload["project_id"]), data, update
+        )
+    if job_type == "hypotheses":
+        data = HypothesisGenerateRequest.model_validate(payload)
+        return lambda job_db, update: _run_hypotheses_job(
+            job_db, settings, int(payload["project_id"]), data, update
+        )
+    if job_type == "experiment_run":
+        experiment_id = int(payload["experiment_id"])
+        return lambda job_db, update: _run_experiment_job(job_db, settings, experiment_id, update)
+    if job_type == "report":
+        project_id = int(payload["project_id"])
+        return lambda job_db, update: _run_report_job(job_db, settings, project_id, update)
+    raise HTTPException(status_code=409, detail=f"任务类型暂不支持重试: {job_type}")
+
+
 # ---------- 项目 ----------
 @router.post("/projects", response_model=ProjectOut, status_code=201, tags=["projects"])
 def create_project(payload: ProjectCreate, request: Request) -> dict:
@@ -436,3 +468,17 @@ def cancel_job(job_id: int, request: Request) -> dict:
     if row["status"] == "running":
         raise HTTPException(status_code=409, detail="任务已开始运行，只能等待其完成")
     return row
+
+
+@router.post("/jobs/{job_id}/retry", response_model=JobOut, tags=["jobs"])
+def retry_job(job_id: int, request: Request) -> dict:
+    db = _db(request)
+    job = db.query_one(f"SELECT * FROM jobs WHERE id = {db.ph}", [job_id])
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if job["status"] not in {"failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="只有 failed 或 cancelled 任务可以重试")
+    fn = _handler_for_job(request, job)
+    queued = request.app.state.jobs.reset_for_retry(db, job_id)
+    request.app.state.jobs.submit(db, queued, fn)
+    return db.query_one(f"SELECT * FROM jobs WHERE id = {db.ph}", [job_id])

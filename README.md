@@ -159,7 +159,8 @@ docker compose up -d --build
 | `MAX_OUTPUT_BYTES` | `200000` | 单次 stdout/stderr 最大保存量 |
 | `API_KEY` | 空 | 非空时要求 `X-API-Key` 或 `Authorization: Bearer ...` |
 | `JOB_MAX_WORKERS` | `2` | 进程内后台任务并发数 |
-| `JOB_MAX_ATTEMPTS` | `1` | 任务执行尝试上限 |
+| `JOB_MAX_ATTEMPTS` | `3` | 任务执行尝试上限 |
+| `JOB_RETRY_BACKOFF_SECONDS` | `0.2` | 自动重试指数退避初始秒数 |
 | `JOB_STALE_AFTER_SECONDS` | `300` | 任务心跳告警阈值 |
 | `SANDBOX_CPUS` | `1.0` | Docker CPU 限制 |
 | `SANDBOX_MEMORY` | `1g` | Docker 内存限制 |
@@ -232,9 +233,12 @@ curl -X POST \
 curl http://127.0.0.1:8000/jobs/1
 curl 'http://127.0.0.1:8000/jobs?project_id=1&status=running'
 curl -X POST http://127.0.0.1:8000/jobs/1/cancel
+curl -X POST http://127.0.0.1:8000/jobs/1/retry
 ```
 
 任务状态包括 `queued`、`running`、`succeeded`、`failed` 和 `cancelled`。重复提交同一个 `Idempotency-Key` 会复用原任务，不会重复消耗检索或模型资源。M2 的进程内任务执行器在 M3 增加了 worker 标识、尝试次数、心跳和重启恢复：服务重启时遗留的 `queued/running` 任务会被明确标记为 `failed/interrupted`，不会永久停留在运行中。
+
+M4 增加自动重试和指数退避；任务执行前使用数据库条件更新抢占，多个 API worker 同时提交同一任务时只允许一个 worker 真正执行。`failed` 或 `cancelled` 任务可以通过 `POST /jobs/{id}/retry` 手动重新入队。监控系统可抓取 `GET /metrics/prometheus`，获取 Prometheus 文本格式的请求数、失败数和活动任务数。
 
 ### API 安全与请求追踪
 

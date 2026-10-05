@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -110,38 +111,73 @@ class JobManager:
                 self._mark_cancelled(db, job_id, "任务被取消")
         return db.query_one(f"SELECT * FROM jobs WHERE id = {db.ph}", [job_id])
 
+    def reset_for_retry(self, db: Database, job_id: int) -> dict[str, Any] | None:
+        """将终态任务清空执行结果并原子地放回队列。"""
+        updated = db.execute(
+            f"UPDATE jobs SET status = {db.ph}, progress = 0, current_step = {db.ph}, "
+            f"output = NULL, error = NULL, attempt_count = 0, finished_at = NULL "
+            f"WHERE id = {db.ph} AND status IN ('failed', 'cancelled')",
+            ["queued", "retry_queued", job_id],
+        )
+        if not updated:
+            return db.query_one(f"SELECT * FROM jobs WHERE id = {db.ph}", [job_id])
+        return db.query_one(f"SELECT * FROM jobs WHERE id = {db.ph}", [job_id])
+
     def _run(self, job_id: int, fn: JobFn) -> None:
         db = Database(self.settings)
-        try:
-            db.execute(
+        max_attempts = max(1, int(self.settings.job_max_attempts))
+        for attempt in range(max_attempts):
+            claimed = db.execute(
                 f"UPDATE jobs SET status = {db.ph}, progress = {db.ph}, current_step = {db.ph}, "
                 f"started_at = {db.ph}, heartbeat_at = {db.ph}, worker_id = {db.ph}, "
                 f"attempt_count = attempt_count + 1 WHERE id = {db.ph} AND status = 'queued'",
                 ["running", 1, "starting", _now(), _now(), self.worker_id, job_id],
             )
+            if claimed != 1:
+                return
 
-            def update(progress: int, step: str) -> None:
+            try:
+
+                def update(progress: int, step: str) -> None:
+                    db.execute(
+                        f"UPDATE jobs SET progress = {db.ph}, current_step = {db.ph} "
+                        f", heartbeat_at = {db.ph} WHERE id = {db.ph} AND status = 'running'",
+                        [max(0, min(100, int(progress))), step[:200], _now(), job_id],
+                    )
+
+                result = fn(db, update)
                 db.execute(
-                    f"UPDATE jobs SET progress = {db.ph}, current_step = {db.ph} "
-                    f", heartbeat_at = {db.ph} WHERE id = {db.ph} AND status = 'running'",
-                    [max(0, min(100, int(progress))), step[:200], _now(), job_id],
+                    f"UPDATE jobs SET status = {db.ph}, progress = 100, current_step = {db.ph}, "
+                    f"output = {db.ph}, heartbeat_at = {db.ph}, finished_at = {db.ph} "
+                    f"WHERE id = {db.ph} AND status = 'running'",
+                    ["succeeded", "completed", db.dumps(result), _now(), _now(), job_id],
                 )
-
-            result = fn(db, update)
-            db.execute(
-                f"UPDATE jobs SET status = {db.ph}, progress = 100, current_step = {db.ph}, "
-                f"output = {db.ph}, heartbeat_at = {db.ph}, finished_at = {db.ph} "
-                f"WHERE id = {db.ph} AND status = 'running'",
-                ["succeeded", "completed", db.dumps(result), _now(), _now(), job_id],
-            )
-        except Exception as exc:
-            logger.exception("后台任务 #{} 失败", job_id)
-            db.execute(
-                f"UPDATE jobs SET status = {db.ph}, current_step = {db.ph}, error = {db.ph}, "
-                f"heartbeat_at = {db.ph}, finished_at = {db.ph} "
-                f"WHERE id = {db.ph} AND status IN ('queued', 'running')",
-                ["failed", "failed", f"{type(exc).__name__}: {exc}"[:4000], _now(), _now(), job_id],
-            )
+                return
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"[:4000]
+                if attempt + 1 < max_attempts:
+                    logger.warning(
+                        "后台任务 #{} 第 {} 次失败，将在退避后重试: {}",
+                        job_id,
+                        attempt + 1,
+                        error,
+                    )
+                    db.execute(
+                        f"UPDATE jobs SET status = {db.ph}, current_step = {db.ph}, error = {db.ph}, "
+                        f"heartbeat_at = {db.ph} WHERE id = {db.ph} AND status = 'running'",
+                        ["queued", "retry_wait", error, _now(), job_id],
+                    )
+                    backoff = max(0.0, float(self.settings.job_retry_backoff_seconds))
+                    time.sleep(min(5.0, backoff * (2**attempt)))
+                    continue
+                logger.exception("后台任务 #{} 最终失败", job_id)
+                db.execute(
+                    f"UPDATE jobs SET status = {db.ph}, current_step = {db.ph}, error = {db.ph}, "
+                    f"heartbeat_at = {db.ph}, finished_at = {db.ph} "
+                    f"WHERE id = {db.ph} AND status IN ('queued', 'running')",
+                    ["failed", "failed", error, _now(), _now(), job_id],
+                )
+                return
 
     @staticmethod
     def _mark_cancelled(db: Database, job_id: int, reason: str) -> None:

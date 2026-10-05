@@ -53,7 +53,8 @@ class Settings(BaseSettings):
     ui_port: int = 8501
     api_key: str = ""  # 非空时保护业务 API；空值保持本地开发免鉴权
     job_stale_after_seconds: int = 300
-    job_max_attempts: int = 1
+    job_max_attempts: int = 3
+    job_retry_backoff_seconds: float = 0.2
 
     # 实验（阶段 4/5）：离线代理实验的数据集与执行参数
     experiment_datasets: str = "iris,wine,breast_cancer"
