@@ -10,7 +10,7 @@ from ..graph import build_graph, export_graph
 from ..hypotheses import generate_hypotheses
 from ..literature import run_pipeline
 from ..reporting import generate_report
-from ..security import require_api_key
+from ..security import require_api_key, require_project_access
 from ..schemas import (
     GraphBuildRequest,
     GraphBuildSummary,
@@ -26,7 +26,7 @@ from ..schemas import (
     ProjectOut,
 )
 
-router = APIRouter(dependencies=[Depends(require_api_key)])
+router = APIRouter(dependencies=[Depends(require_api_key), Depends(require_project_access)])
 
 
 def _db(request: Request) -> Database:
@@ -46,12 +46,20 @@ def _submit_background(
     if response is not None:
         response.status_code = 202
     jobs = request.app.state.jobs
+    try:
+        priority = int(
+            request.headers.get("X-Job-Priority", request.app.state.settings.job_default_priority)
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="X-Job-Priority 必须是整数") from exc
+    priority = max(0, min(priority, request.app.state.settings.job_max_priority))
     job, reused = jobs.create(
         _db(request),
         job_type=job_type,
         project_id=project_id,
         payload=payload,
         idempotency_key=idempotency_key,
+        priority=priority,
     )
     if not reused or job["status"] == "queued":
         jobs.submit(_db(request), job, fn)
@@ -141,7 +149,16 @@ def create_project(payload: ProjectCreate, request: Request) -> dict:
 @router.get("/projects", response_model=list[ProjectOut], tags=["projects"])
 def list_projects(request: Request, limit: int = 50) -> list[dict]:
     db = _db(request)
-    return db.query(f"SELECT * FROM projects ORDER BY id DESC LIMIT {db.ph}", [limit])
+    allowed = request.app.state.settings.api_key_project_id
+    if allowed is not None:
+        return db.query(
+            f"SELECT * FROM projects WHERE id = {db.ph} ORDER BY id DESC LIMIT {db.ph}",
+            [allowed, max(1, min(limit, 200))],
+        )
+    return db.query(
+        f"SELECT * FROM projects ORDER BY id DESC LIMIT {db.ph}",
+        [max(1, min(limit, 200))],
+    )
 
 
 @router.get("/projects/{project_id}", response_model=ProjectOut, tags=["projects"])
@@ -423,6 +440,9 @@ def list_jobs(
     if project_id is not None:
         clauses.append(f"project_id = {db.ph}")
         params.append(project_id)
+    elif request.app.state.settings.api_key_project_id is not None:
+        clauses.append(f"project_id = {db.ph}")
+        params.append(request.app.state.settings.api_key_project_id)
     if status:
         clauses.append(f"status = {db.ph}")
         params.append(status)

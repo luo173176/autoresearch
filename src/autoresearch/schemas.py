@@ -30,6 +30,7 @@ class JobOut(BaseModel):
     type: str
     status: str
     progress: int
+    priority: int = 0
     current_step: str
     input: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] | None = None

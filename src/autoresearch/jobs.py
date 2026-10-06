@@ -62,6 +62,7 @@ class JobManager:
         project_id: int | None,
         payload: dict[str, Any],
         idempotency_key: str | None = None,
+        priority: int = 0,
     ) -> tuple[dict[str, Any], bool]:
         """创建任务；返回 (任务, 是否复用已有任务)。"""
         if idempotency_key:
@@ -72,9 +73,9 @@ class JobManager:
                 return existing, True
         try:
             job_id = db.insert(
-                f"INSERT INTO jobs (project_id, type, input, idempotency_key) "
-                f"VALUES ({db.ph}, {db.ph}, {db.ph}, {db.ph})",
-                [project_id, job_type, db.dumps(payload), idempotency_key],
+                f"INSERT INTO jobs (project_id, type, input, idempotency_key, priority) "
+                f"VALUES ({db.ph}, {db.ph}, {db.ph}, {db.ph}, {db.ph})",
+                [project_id, job_type, db.dumps(payload), idempotency_key, int(priority)],
             )
         except Exception:
             # 并发重复请求可能先后通过查询；唯一键冲突时返回已存在任务。

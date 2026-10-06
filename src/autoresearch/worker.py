@@ -104,7 +104,8 @@ def dispatch_pending(
 ) -> int:
     """扫描并提交 queued 任务；真正执行仍由 JobManager 原子抢占。"""
     rows = db.query(
-        f"SELECT * FROM jobs WHERE status = 'queued' ORDER BY id LIMIT {db.ph}", [limit]
+        f"SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority DESC, id ASC LIMIT {db.ph}",
+        [limit],
     )
     submitted = 0
     for job in rows:

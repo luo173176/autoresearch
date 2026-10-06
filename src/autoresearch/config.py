@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_LOCAL_LLM = "http://localhost:11434/v1"
@@ -52,6 +53,10 @@ class Settings(BaseSettings):
     api_port: int = 8000
     ui_port: int = 8501
     api_key: str = ""  # 非空时保护业务 API；空值保持本地开发免鉴权
+    api_key_project_id: int | None = None  # 非空时把该 key 限定到单个项目
+    rate_limit_per_minute: int = 120  # 进程内 IP/API Key 请求上限
+    job_default_priority: int = 0
+    job_max_priority: int = 100
     job_stale_after_seconds: int = 300
     job_max_attempts: int = 3
     job_retry_backoff_seconds: float = 0.2
@@ -80,6 +85,11 @@ class Settings(BaseSettings):
     semantic_scholar_api: str = "https://api.semanticscholar.org/graph/v1"
     semantic_scholar_key: str = ""
     pubmed_api: str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+
+    @field_validator("api_key_project_id", mode="before")
+    @classmethod
+    def empty_project_scope_is_unset(cls, value):
+        return None if value == "" else value
 
     def ensure_dirs(self) -> None:
         """创建数据目录骨架（论文 PDF / 缓存 / 产物 / 实验工作区）。"""

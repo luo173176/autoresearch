@@ -14,7 +14,7 @@ from ..config import Settings, get_settings
 from ..db import Database
 from ..jobs import JobManager
 from ..schemas import HealthOut
-from ..security import require_api_key
+from ..security import RateLimiter, require_api_key
 from .routes import router
 
 
@@ -35,11 +35,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logger.warning("recovered {} interrupted background jobs", recovered)
     app.state.metrics = {"requests_total": 0, "requests_failed": 0, "jobs_submitted": 0}
     app.state.metrics_lock = threading.Lock()
+    app.state.rate_limiter = RateLimiter(settings.rate_limit_per_minute)
 
     @app.middleware("http")
     async def request_observability(request: Request, call_next):
         request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
         started = time.perf_counter()
+        if request.url.path != "/health":
+            client_host = request.client.host if request.client else "unknown"
+            limiter_key = request.headers.get("X-API-Key") or client_host
+            if not app.state.rate_limiter.allow(limiter_key):
+                response = Response(
+                    content='{"detail":"请求过于频繁，请稍后重试"}',
+                    status_code=429,
+                    media_type="application/json",
+                    headers={"Retry-After": "60", "X-Request-ID": request_id},
+                )
+                with app.state.metrics_lock:
+                    app.state.metrics["requests_failed"] += 1
+                return response
         try:
             response = await call_next(request)
         except Exception:
@@ -85,9 +99,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with app.state.metrics_lock:
             values = dict(app.state.metrics)
         try:
-            values["jobs_active"] = db.scalar(
-                "SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')"
-            )
+            if settings.api_key_project_id is None:
+                values["jobs_active"] = db.scalar(
+                    "SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')"
+                )
+            else:
+                values["jobs_active"] = db.scalar(
+                    f"SELECT COUNT(*) FROM jobs WHERE project_id = {db.ph} "
+                    "AND status IN ('queued', 'running')",
+                    [settings.api_key_project_id],
+                )
         except Exception:
             values["jobs_active"] = 0
         return values
@@ -97,9 +118,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with app.state.metrics_lock:
             values = dict(app.state.metrics)
         try:
-            values["jobs_active"] = db.scalar(
-                "SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')"
-            )
+            if settings.api_key_project_id is None:
+                values["jobs_active"] = db.scalar(
+                    "SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')"
+                )
+            else:
+                values["jobs_active"] = db.scalar(
+                    f"SELECT COUNT(*) FROM jobs WHERE project_id = {db.ph} "
+                    "AND status IN ('queued', 'running')",
+                    [settings.api_key_project_id],
+                )
         except Exception:
             values["jobs_active"] = 0
         body = (

@@ -159,7 +159,11 @@ docker compose up -d --build
 | `ALLOW_NETWORK` | `false` | Docker 实验是否允许网络 |
 | `MAX_OUTPUT_BYTES` | `200000` | 单次 stdout/stderr 最大保存量 |
 | `API_KEY` | 空 | 非空时要求 `X-API-Key` 或 `Authorization: Bearer ...` |
+| `API_KEY_PROJECT_ID` | 空 | 将 API Key 限定到单个项目；空值可访问全部项目 |
+| `RATE_LIMIT_PER_MINUTE` | `120` | 单进程按 API Key/IP 的请求上限；`0` 表示关闭 |
 | `JOB_MAX_WORKERS` | `2` | 进程内后台任务并发数 |
+| `JOB_DEFAULT_PRIORITY` | `0` | 未指定优先级时的默认值 |
+| `JOB_MAX_PRIORITY` | `100` | 客户端可提交的最大任务优先级 |
 | `JOB_MAX_ATTEMPTS` | `3` | 任务执行尝试上限 |
 | `JOB_RETRY_BACKOFF_SECONDS` | `0.2` | 自动重试指数退避初始秒数 |
 | `JOB_STALE_AFTER_SECONDS` | `300` | 任务心跳告警阈值 |
@@ -209,6 +213,7 @@ docker compose up -d --build
 |---|---|---|
 | `GET` | `/health` | 服务和数据库健康检查 |
 | `GET` | `/metrics` | 请求数、失败数和活动任务数 |
+| `GET` | `/metrics/prometheus` | Prometheus 文本格式指标 |
 | `POST` | `/projects` | 创建项目 |
 | `POST` | `/projects/{id}/literature` | 检索文献并抽取 chunks |
 | `POST` | `/projects/{id}/graph` | 构建项目图谱 |
@@ -240,6 +245,8 @@ curl -X POST http://127.0.0.1:8000/jobs/1/retry
 任务状态包括 `queued`、`running`、`succeeded`、`failed` 和 `cancelled`。重复提交同一个 `Idempotency-Key` 会复用原任务，不会重复消耗检索或模型资源。M2 的进程内任务执行器在 M3 增加了 worker 标识、尝试次数、心跳和重启恢复：服务重启时遗留的 `queued/running` 任务会被明确标记为 `failed/interrupted`，不会永久停留在运行中。
 
 M4 增加自动重试和指数退避；任务执行前使用数据库条件更新抢占，多个 API worker 同时提交同一任务时只允许一个 worker 真正执行。`failed` 或 `cancelled` 任务可以通过 `POST /jobs/{id}/retry` 手动重新入队。监控系统可抓取 `GET /metrics/prometheus`，获取 Prometheus 文本格式的请求数、失败数和活动任务数。
+
+M6 在此基础上增加任务优先级、项目范围 API Key 和基础限流。后台任务请求可使用 `X-Job-Priority: 0..100`，worker 按优先级从高到低、同优先级按创建顺序领取。设置 `AUTORESEARCH_API_KEY_PROJECT_ID` 后，该 API Key 只能读取和操作指定项目及其关联资源；超出范围返回 `403`。超过 `RATE_LIMIT_PER_MINUTE` 的请求返回 `429`，多实例部署时建议在网关或 Redis 层实现全局限流。
 
 ### 独立 Worker（M5）
 
