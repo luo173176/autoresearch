@@ -14,7 +14,7 @@ from ..config import Settings, get_settings
 from ..db import Database
 from ..jobs import JobManager
 from ..schemas import HealthOut
-from ..security import RateLimiter, require_api_key
+from ..security import RateLimiter, _find_database_key, require_api_key, supplied_api_key
 from .routes import router
 
 
@@ -35,7 +35,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logger.warning("recovered {} interrupted background jobs", recovered)
     app.state.metrics = {"requests_total": 0, "requests_failed": 0, "jobs_submitted": 0}
     app.state.metrics_lock = threading.Lock()
-    app.state.rate_limiter = RateLimiter(settings.rate_limit_per_minute)
+    app.state.rate_limiters = {"__default__": RateLimiter(settings.rate_limit_per_minute)}
+    app.state.rate_limiters_lock = threading.Lock()
 
     @app.middleware("http")
     async def request_observability(request: Request, call_next):
@@ -43,8 +44,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         started = time.perf_counter()
         if request.url.path != "/health":
             client_host = request.client.host if request.client else "unknown"
-            limiter_key = request.headers.get("X-API-Key") or client_host
-            if not app.state.rate_limiter.allow(limiter_key):
+            supplied = supplied_api_key(
+                request.headers.get("X-API-Key"), request.headers.get("Authorization")
+            )
+            limiter_key = supplied or client_host
+            limit = settings.rate_limit_per_minute
+            if supplied:
+                database_key = _find_database_key(request, supplied)
+                if database_key:
+                    limit = int(database_key["rate_limit_per_minute"])
+            with app.state.rate_limiters_lock:
+                limiter = app.state.rate_limiters.get(limiter_key)
+                if limiter is None or limiter.limit != max(0, int(limit)):
+                    limiter = RateLimiter(limit)
+                    app.state.rate_limiters[limiter_key] = limiter
+            if not limiter.allow(limiter_key):
                 response = Response(
                     content='{"detail":"请求过于频繁，请稍后重试"}',
                     status_code=429,

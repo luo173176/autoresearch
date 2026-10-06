@@ -1,4 +1,4 @@
 
-## D-030 M6 项目范围权限、限流与优先级（2026-10-06）
+## D-031 M7 数据库 API Key 注册表（2026-10-06）
 
-M6 采用单 API Key 可选项目绑定：`API_KEY_PROJECT_ID` 限制该 key 对项目及关联假设、实验、任务资源的访问，保持现有全局 key 和本地空 key 兼容。限流先采用进程内滑动窗口，避免新增 Redis 依赖；多实例部署由网关/Redis 负责全局限流。任务 priority 持久化在 jobs 表，worker 按 priority DESC、id ASC 调度，客户端通过 `X-Job-Priority` 提交且由服务端做上下界限制。
+M7 将多个 API Key 的生命周期从环境变量迁移到数据库：只保存 SHA-256 哈希与短 prefix，CLI 创建时随机生成 `ar_live_` 密钥并只展示一次；支持 label、单项目绑定、独立速率配置和按 prefix 撤销。旧的单一 `AUTORESEARCH_API_KEY` 保留为 bootstrap/admin 兼容入口。认证逻辑只接受活动注册表 Key 或配置 Key，不执行明文密钥落库。

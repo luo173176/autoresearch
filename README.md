@@ -135,6 +135,8 @@ docker compose up -d --build
 | `autoresearch init` | 创建数据目录并执行迁移 |
 | `autoresearch serve` | 启动 FastAPI |
 | `autoresearch worker` | 启动独立数据库队列 worker |
+| `autoresearch key create` | 创建数据库 API Key，明文只展示一次 |
+| `autoresearch key revoke` | 按 prefix 撤销数据库 API Key |
 | `autoresearch ui` | 启动 Streamlit 看板 |
 | `autoresearch literature "问题"` | 检索、去重、入库和分块 |
 | `autoresearch graph` | 构建知识图谱 |
@@ -247,6 +249,18 @@ curl -X POST http://127.0.0.1:8000/jobs/1/retry
 M4 增加自动重试和指数退避；任务执行前使用数据库条件更新抢占，多个 API worker 同时提交同一任务时只允许一个 worker 真正执行。`failed` 或 `cancelled` 任务可以通过 `POST /jobs/{id}/retry` 手动重新入队。监控系统可抓取 `GET /metrics/prometheus`，获取 Prometheus 文本格式的请求数、失败数和活动任务数。
 
 M6 在此基础上增加任务优先级、项目范围 API Key 和基础限流。后台任务请求可使用 `X-Job-Priority: 0..100`，worker 按优先级从高到低、同优先级按创建顺序领取。设置 `AUTORESEARCH_API_KEY_PROJECT_ID` 后，该 API Key 只能读取和操作指定项目及其关联资源；超出范围返回 `403`。超过 `RATE_LIMIT_PER_MINUTE` 的请求返回 `429`，多实例部署时建议在网关或 Redis 层实现全局限流。
+
+### 数据库 API Key（M7）
+
+生产环境推荐使用数据库 Key，而不是把多个密钥写入环境变量：
+
+```bash
+autoresearch key create --label research-client --project 1 --rate-limit 120
+# 命令只在创建时打印一次 plaintext；之后数据库只保存 SHA-256 哈希
+autoresearch key revoke ar_live_xxxxx
+```
+
+数据库 Key 支持单项目绑定、启用/撤销和独立速率配置。撤销按 key prefix 执行，不需要再次输入完整密钥。旧的 `AUTORESEARCH_API_KEY` 仍可作为 bootstrap/admin 兼容入口。
 
 ### 独立 Worker（M5）
 

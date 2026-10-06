@@ -149,7 +149,9 @@ def create_project(payload: ProjectCreate, request: Request) -> dict:
 @router.get("/projects", response_model=list[ProjectOut], tags=["projects"])
 def list_projects(request: Request, limit: int = 50) -> list[dict]:
     db = _db(request)
-    allowed = request.app.state.settings.api_key_project_id
+    allowed = getattr(request.state, "api_key_project_id", None)
+    if allowed is None:
+        allowed = request.app.state.settings.api_key_project_id
     if allowed is not None:
         return db.query(
             f"SELECT * FROM projects WHERE id = {db.ph} ORDER BY id DESC LIMIT {db.ph}",

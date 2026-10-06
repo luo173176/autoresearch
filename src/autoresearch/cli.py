@@ -405,6 +405,61 @@ def run_worker(
     )
 
 
+def run_key_create(
+    label: str = "",
+    project: int | None = None,
+    rate_limit: int = 120,
+    settings: Settings | None = None,
+) -> int:
+    """创建数据库 API Key；明文只在命令输出中展示一次。"""
+    import secrets
+
+    from .db import Database
+    from .security import hash_api_key
+
+    s = settings or get_settings()
+    s.ensure_dirs()
+    db = Database(s)
+    db.migrate()
+    if (
+        project is not None
+        and db.query_one(f"SELECT id FROM projects WHERE id = {db.ph}", [project]) is None
+    ):
+        print(f"[key] 项目 #{project} 不存在", file=sys.stderr)
+        return 1
+    if rate_limit < 0:
+        print("[key] rate-limit 不能为负数", file=sys.stderr)
+        return 1
+    value = "ar_live_" + secrets.token_urlsafe(32)
+    prefix = value[:16]
+    db.insert(
+        f"INSERT INTO api_keys (key_prefix, key_hash, label, project_id, rate_limit_per_minute) "
+        f"VALUES ({db.ph}, {db.ph}, {db.ph}, {db.ph}, {db.ph})",
+        [prefix, hash_api_key(value), label, project, rate_limit],
+    )
+    print(f"[key] created prefix={prefix} label={label!r} project={project}")
+    print(f"[key] plaintext (save now; never shown again): {value}")
+    return 0
+
+
+def run_key_revoke(prefix: str, settings: Settings | None = None) -> int:
+    from .db import Database
+
+    s = settings or get_settings()
+    db = Database(s)
+    db.migrate()
+    updated = db.execute(
+        f"UPDATE api_keys SET active = {db.ph}, revoked_at = CURRENT_TIMESTAMP "
+        f"WHERE key_prefix = {db.ph} AND active = {db.ph}",
+        [False if db.backend == "postgres" else 0, prefix, True if db.backend == "postgres" else 1],
+    )
+    if not updated:
+        print(f"[key] active key not found: {prefix}", file=sys.stderr)
+        return 1
+    print(f"[key] revoked: {prefix}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="autoresearch", description="AutoResearch 自主科研与实验平台"
@@ -459,6 +514,14 @@ def main(argv: list[str] | None = None) -> int:
     p_worker.add_argument("--once", action="store_true", help="处理当前队列后退出")
     p_worker.add_argument("--workers", type=int, default=None, help="worker 线程数")
     p_worker.add_argument("--batch", type=int, default=20, help="每轮最多领取任务数")
+    p_key = sub.add_parser("key", help="管理数据库 API Key")
+    key_sub = p_key.add_subparsers(dest="key_command", required=True)
+    p_key_create = key_sub.add_parser("create", help="创建 API Key（明文只显示一次）")
+    p_key_create.add_argument("--label", default="", help="Key 标签")
+    p_key_create.add_argument("--project", type=int, default=None, help="绑定项目 ID")
+    p_key_create.add_argument("--rate-limit", type=int, default=120, help="每分钟请求上限")
+    p_key_revoke = key_sub.add_parser("revoke", help="按 prefix 撤销 API Key")
+    p_key_revoke.add_argument("prefix")
     sub.add_parser("version", help="打印版本")
 
     args = parser.parse_args(argv)
@@ -505,6 +568,11 @@ def main(argv: list[str] | None = None) -> int:
         return run_ui(args.port)
     if args.command == "worker":
         return run_worker(args.interval, args.once, args.workers, args.batch)
+    if args.command == "key":
+        if args.key_command == "create":
+            return run_key_create(args.label, args.project, args.rate_limit)
+        if args.key_command == "revoke":
+            return run_key_revoke(args.prefix)
     if args.command == "version":
         print(f"AutoResearch {__version__}")
         return 0
