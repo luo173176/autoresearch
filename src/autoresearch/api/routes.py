@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
 
 from ..db import Database
 from ..experiments import create_experiment, run_experiment
 from ..graph import build_graph, export_graph
 from ..hypotheses import generate_hypotheses
 from ..literature import run_pipeline
+from ..literature import link_project_paper, store_paper
+from ..literature.extractor import build_chunks, chunk_text
+from ..literature.pdf_parser import parse_pdf
+from ..models import Paper
+from ..research import run_framework_research
 from ..reporting import generate_report
 from ..security import require_api_key, require_project_access
 from ..schemas import (
@@ -24,6 +39,9 @@ from ..schemas import (
     PaperOut,
     ProjectCreate,
     ProjectOut,
+    PaperImportRequest,
+    ResearchRequest,
+    ResearchSummary,
 )
 
 router = APIRouter(dependencies=[Depends(require_api_key), Depends(require_project_access)])
@@ -119,6 +137,27 @@ def _run_report_job(db, settings, project_id, update) -> dict:
     update(10, "generating_report")
     result = generate_report(db, settings, project_id=project_id)
     update(100, "report_completed")
+    return result
+
+
+def _run_research_job(db, settings, project_id, payload, update) -> dict:
+    update(10, "researching_framework")
+    result = run_framework_research(
+        db,
+        settings,
+        project_id=project_id,
+        mode=payload.mode,
+        framework=payload.framework,
+        paper_ids=payload.paper_ids,
+        use_llm=payload.use_llm,
+        max_chunks=payload.max_chunks,
+        query=payload.query,
+        sources=payload.sources,
+        max_results=payload.max_results,
+        download_pdfs=payload.download_pdfs,
+        pdf_limit=payload.pdf_limit,
+    )
+    update(100, "research_completed")
     return result
 
 
@@ -225,6 +264,156 @@ def list_project_papers(project_id: int, request: Request) -> list[dict]:
         f"SELECT p.* FROM papers p JOIN projects_papers pp ON pp.paper_id = p.id "
         f"WHERE pp.project_id = {db.ph} ORDER BY pp.id DESC LIMIT 500",
         [project_id],
+    )
+
+
+@router.post(
+    "/projects/{project_id}/papers/import",
+    response_model=PaperOut,
+    status_code=201,
+    tags=["literature"],
+)
+def import_paper(project_id: int, payload: PaperImportRequest, request: Request) -> dict:
+    """手动添加一篇文献；可附带全文 text，导入后立即分块。"""
+    db = _db(request)
+    if db.query_one(f"SELECT id FROM projects WHERE id = {db.ph}", [project_id]) is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    paper = Paper(
+        id=0,
+        title=payload.title,
+        authors=payload.authors,
+        year=payload.year,
+        venue=payload.venue,
+        abstract=payload.abstract,
+        url=payload.url,
+        metadata={**payload.metadata, "source": "user-import"},
+    )
+    paper_id, _ = store_paper(db, paper)
+    link_project_paper(db, project_id, paper_id, "user-import")
+    texts = [payload.text] if payload.text else ([payload.abstract] if payload.abstract else [])
+    if texts:
+        build_chunks(db, request.app.state.settings, paper_id, texts, use_llm=False)
+    return db.query_one(f"SELECT * FROM papers WHERE id = {db.ph}", [paper_id])
+
+
+@router.post(
+    "/projects/{project_id}/papers/upload",
+    response_model=PaperOut,
+    status_code=201,
+    tags=["literature"],
+)
+async def upload_paper(
+    project_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    title: str | None = Form(default=None),
+) -> dict:
+    """上传 PDF 文献；服务端解析文本、入库、关联项目并自动分块。"""
+    db = _db(request)
+    if db.query_one(f"SELECT id FROM projects WHERE id = {db.ph}", [project_id]) is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    content = await file.read()
+    if len(content) > 30 * 1024 * 1024 or not content[:5].startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="仅支持不超过 30MB 的 PDF 文件")
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
+        tmp.write(content)
+        tmp.flush()
+        parsed = parse_pdf(tmp.name)
+    paper = Paper(
+        id=0,
+        title=(title or parsed["title"] or file.filename or "Imported PDF")[:500],
+        authors=[],
+        abstract=None,
+        metadata={"source": "user-upload", "filename": file.filename},
+    )
+    paper_id, _ = store_paper(db, paper)
+    dest = Path(request.app.state.settings.data_dir) / "papers" / f"{paper_id}.pdf"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(content)
+    db.execute(f"UPDATE papers SET pdf_path = {db.ph} WHERE id = {db.ph}", [str(dest), paper_id])
+    link_project_paper(db, project_id, paper_id, "user-upload")
+    build_chunks(
+        db,
+        request.app.state.settings,
+        paper_id,
+        chunk_text(
+            parsed["text"],
+            request.app.state.settings.chunk_size,
+            request.app.state.settings.chunk_overlap,
+        ),
+        use_llm=False,
+    )
+    return db.query_one(f"SELECT * FROM papers WHERE id = {db.ph}", [paper_id])
+
+
+@router.post(
+    "/projects/{project_id}/research",
+    response_model=ResearchSummary | JobAccepted,
+    tags=["research"],
+)
+def research_project(
+    project_id: int,
+    payload: ResearchRequest,
+    request: Request,
+    background: bool = False,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    response: Response = None,
+) -> dict:
+    """对项目已有文献研究；mode=auto 使用内置框架，mode=custom 使用用户框架。"""
+    db = _db(request)
+    if db.query_one(f"SELECT id FROM projects WHERE id = {db.ph}", [project_id]) is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if payload.paper_ids:
+        marks = ", ".join([db.ph] * len(payload.paper_ids))
+        count = db.scalar(
+            f"SELECT COUNT(*) FROM projects_papers WHERE project_id = {db.ph} AND paper_id IN ({marks})",
+            [project_id, *payload.paper_ids],
+        )
+        if count != len(set(payload.paper_ids)):
+            raise HTTPException(status_code=400, detail="paper_ids 中包含不属于当前项目的文献")
+    if background:
+        return _submit_background(
+            request,
+            job_type="research",
+            project_id=project_id,
+            payload={"project_id": project_id, **payload.model_dump()},
+            idempotency_key=idempotency_key,
+            response=response,
+            fn=lambda job_db, update: _run_research_job(
+                job_db, request.app.state.settings, project_id, payload, update
+            ),
+        )
+    try:
+        return run_framework_research(
+            db,
+            request.app.state.settings,
+            project_id=project_id,
+            mode=payload.mode,
+            framework=payload.framework,
+            paper_ids=payload.paper_ids,
+            use_llm=payload.use_llm,
+            max_chunks=payload.max_chunks,
+            query=payload.query,
+            sources=payload.sources,
+            max_results=payload.max_results,
+            download_pdfs=payload.download_pdfs,
+            pdf_limit=payload.pdf_limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/research", tags=["research"])
+def list_research_runs(project_id: int, request: Request, limit: int = 20) -> list[dict]:
+    db = _db(request)
+    if db.query_one(f"SELECT id FROM projects WHERE id = {db.ph}", [project_id]) is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return db.query(
+        f"SELECT * FROM research_runs WHERE project_id = {db.ph} ORDER BY id DESC LIMIT {db.ph}",
+        [project_id, max(1, min(limit, 100))],
     )
 
 

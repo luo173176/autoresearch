@@ -15,7 +15,13 @@ from .hypotheses import generate_hypotheses
 from .jobs import JobManager, JobFn
 from .literature import run_pipeline
 from .reporting import generate_report
-from .schemas import GraphBuildRequest, HypothesisGenerateRequest, LiteratureRequest
+from .research import run_framework_research
+from .schemas import (
+    GraphBuildRequest,
+    HypothesisGenerateRequest,
+    LiteratureRequest,
+    ResearchRequest,
+)
 
 
 def _literature(db, settings, project, payload, update):
@@ -69,6 +75,27 @@ def _report(db, settings, project_id, update):
     return result
 
 
+def _research(db, settings, project_id, payload, update):
+    update(10, "researching_framework")
+    result = run_framework_research(
+        db,
+        settings,
+        project_id=project_id,
+        mode=payload.mode,
+        framework=payload.framework,
+        paper_ids=payload.paper_ids,
+        use_llm=payload.use_llm,
+        max_chunks=payload.max_chunks,
+        query=payload.query,
+        sources=payload.sources,
+        max_results=payload.max_results,
+        download_pdfs=payload.download_pdfs,
+        pdf_limit=payload.pdf_limit,
+    )
+    update(100, "research_completed")
+    return result
+
+
 def handler_for_job(db: Database, settings: Settings, job: dict[str, Any]) -> JobFn:
     """根据持久化的任务类型和 input 重建 handler，不执行任意数据库代码。"""
     payload = job.get("input") or {}
@@ -96,6 +123,11 @@ def handler_for_job(db: Database, settings: Settings, job: dict[str, Any]) -> Jo
     if job_type == "report":
         project_id = int(payload["project_id"])
         return lambda task_db, update: _report(task_db, settings, project_id, update)
+    if job_type == "research":
+        data = ResearchRequest.model_validate(payload)
+        return lambda task_db, update: _research(
+            task_db, settings, int(payload["project_id"]), data, update
+        )
     raise ValueError(f"不支持的任务类型: {job_type}")
 
 

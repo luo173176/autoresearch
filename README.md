@@ -139,6 +139,9 @@ docker compose up -d --build
 | `autoresearch key revoke` | 按 prefix 撤销数据库 API Key |
 | `autoresearch ui` | 启动 Streamlit 看板 |
 | `autoresearch literature "问题"` | 检索、去重、入库和分块 |
+| `POST /projects/{id}/papers/import` | 手动添加文献元数据或全文 |
+| `POST /projects/{id}/papers/upload` | 上传 PDF，自动解析并分块 |
+| `POST /projects/{id}/research` | 用自动框架或用户框架研究项目文献 |
 | `autoresearch graph` | 构建知识图谱 |
 | `autoresearch hypotheses` | 生成研究假设 |
 | `autoresearch experiment` | 设计实验并生成实验包 |
@@ -249,6 +252,41 @@ curl -X POST http://127.0.0.1:8000/jobs/1/retry
 M4 增加自动重试和指数退避；任务执行前使用数据库条件更新抢占，多个 API worker 同时提交同一任务时只允许一个 worker 真正执行。`failed` 或 `cancelled` 任务可以通过 `POST /jobs/{id}/retry` 手动重新入队。监控系统可抓取 `GET /metrics/prometheus`，获取 Prometheus 文本格式的请求数、失败数和活动任务数。
 
 M6 在此基础上增加任务优先级、项目范围 API Key 和基础限流。后台任务请求可使用 `X-Job-Priority: 0..100`，worker 按优先级从高到低、同优先级按创建顺序领取。设置 `AUTORESEARCH_API_KEY_PROJECT_ID` 后，该 API Key 只能读取和操作指定项目及其关联资源；超出范围返回 `403`。超过 `RATE_LIMIT_PER_MINUTE` 的请求返回 `429`，多实例部署时建议在网关或 Redis 层实现全局限流。
+
+### 两种研究方式（M8）
+
+AutoResearch 现在把“文献来源”和“研究方法”解耦：
+
+1. **自动抓取研究**：调用已有的文献检索接口，系统从 arXiv、Semantic Scholar 或 PubMed 检索、去重、入库、分块，然后调用 `/research` 分析。
+2. **用户添加文献研究**：用户可以通过 JSON 元数据/全文导入，或者直接上传 PDF。导入后的文献进入同一项目数据库，与自动抓取的文献完全共用图谱、假设和报告流程。
+
+自动研究示例：
+
+```bash
+curl -X POST http://localhost:8000/projects/1/research \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"auto","query":"retrieval augmented generation","sources":["arxiv"],"use_llm":true}'
+```
+
+如果项目中已经有文献，也可以省略 `query`，直接对现有文献运行自动框架。
+
+手动添加文献并按用户框架研究：
+
+```bash
+curl -X POST http://localhost:8000/projects/1/papers/import \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"我的论文","authors":["作者"],"abstract":"摘要","text":"全文内容"}'
+
+curl -X POST http://localhost:8000/projects/1/research \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"custom","paper_ids":[3],"framework":{
+    "evidence":"只提取有原文依据的结论，并标注证据片段。",
+    "methods":"比较数据、方法、实验设置和评价指标。",
+    "reproducibility":"评价数据、代码和实验是否可复现。"
+  }}'
+```
+
+`mode=auto` 使用内置的“研究问题、方法、主要发现、局限、研究空白”框架；`mode=custom` 要求提供至少一个框架项。两种模式都会把研究结果保存到 `research_runs`，可通过 `GET /projects/{id}/research` 查询历史结果，也支持 `background=true` 进入现有任务队列。
 
 ### 数据库 API Key（M7）
 

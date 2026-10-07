@@ -98,6 +98,43 @@ class PaperOut(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class PaperImportRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    authors: list[str] = Field(default_factory=list)
+    year: int | None = Field(default=None, ge=0, le=3000)
+    venue: str | None = None
+    abstract: str | None = None
+    url: str | None = None
+    text: str | None = Field(default=None, description="可选全文；提供后会自动分块")
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchRequest(BaseModel):
+    mode: str = Field(default="auto", pattern="^(auto|custom)$")
+    framework: dict[str, str] = Field(default_factory=dict)
+    query: str | None = Field(default=None, description="提供后先自动检索文献，再进行研究")
+    sources: list[str] = Field(default_factory=lambda: ["arxiv"])
+    max_results: int = Field(default=50, ge=1, le=200)
+    download_pdfs: bool = False
+    pdf_limit: int = Field(default=10, ge=0, le=50)
+    paper_ids: list[int] | None = None
+    use_llm: bool = True
+    max_chunks: int = Field(default=80, ge=1, le=300)
+
+
+class ResearchSummary(BaseModel):
+    research_id: int
+    project_id: int
+    mode: str
+    framework: dict[str, str]
+    paper_ids: list[int]
+    papers_used: int
+    chunks_used: int
+    result: dict[str, Any]
+    llm_used: bool
+    elapsed_ms: int
+
+
 # ---------- 知识图谱（阶段 2） ----------
 class GraphBuildRequest(BaseModel):
     use_llm: bool = True

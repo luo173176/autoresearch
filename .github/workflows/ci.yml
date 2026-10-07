@@ -34,6 +34,7 @@ jobs:
           src/autoresearch/worker.py
           src/autoresearch/cli.py
           src/autoresearch/security.py
+          src/autoresearch/research.py
           src/autoresearch/schemas.py
           src/autoresearch/api/main.py
           src/autoresearch/api/routes.py
@@ -46,6 +47,7 @@ jobs:
           tests/test_m5_worker.py
           tests/test_m6_access_priority.py
           tests/test_m7_api_keys.py
+          tests/test_m8_research_modes.py
           --select E4,E7,E9,F --ignore E501,F401,F811,I001
       - name: Format check
         run: >-
@@ -56,6 +58,7 @@ jobs:
           src/autoresearch/worker.py
           src/autoresearch/cli.py
           src/autoresearch/security.py
+          src/autoresearch/research.py
           src/autoresearch/schemas.py
           src/autoresearch/api/main.py
           src/autoresearch/api/routes.py
@@ -68,6 +71,7 @@ jobs:
           tests/test_m5_worker.py
           tests/test_m6_access_priority.py
           tests/test_m7_api_keys.py
+          tests/test_m8_research_modes.py
       - name: Tests
         run: pytest
 

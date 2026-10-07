@@ -45,6 +45,9 @@ JSON_COLUMNS = frozenset(
         "figures",
         "input",
         "output",
+        "framework",
+        "paper_ids",
+        "result",
     }
 )
 

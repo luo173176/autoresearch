@@ -138,7 +138,9 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.2.4
     # via pydantic-settings
 python-multipart==0.0.32
-    # via streamlit
+    # via
+    #   autoresearch (pyproject.toml)
+    #   streamlit
 referencing==0.37.0
     # via
     #   jsonschema
