@@ -2,6 +2,7 @@
 
 所有函数接受可选的 httpx.Client（测试注入 MockTransport），未提供时自建并负责关闭。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -43,8 +44,9 @@ def _own(settings: Settings, client: httpx.Client | None) -> Iterator[httpx.Clie
             yield c
 
 
-def _get_with_retry(client: httpx.Client, url: str, *, attempts: int = 3,
-                    **kwargs) -> httpx.Response:
+def _get_with_retry(
+    client: httpx.Client, url: str, *, attempts: int = 3, **kwargs
+) -> httpx.Response:
     """GET + 退避重试：429/406（限流与反爬惩罚，S2 未认证常态）及 5xx、网络抖动可重试。
 
     arXiv 实测会对突发请求按 IP 返回 406 并冷却一段时间，故退避需足够长（10s/30s）。
@@ -108,8 +110,7 @@ def _parse_arxiv_xml(xml_text: str) -> list[Paper]:
         title = re.sub(r"\s+", " ", tag_text("title"))
         abstract = re.sub(r"\s+", " ", tag_text("summary"))
         authors = [
-            a.findtext(f"{{{_ATOM}}}name", "").strip()
-            for a in entry.findall(f"{{{_ATOM}}}author")
+            a.findtext(f"{{{_ATOM}}}name", "").strip() for a in entry.findall(f"{{{_ATOM}}}author")
         ]
         published = tag_text("published")
         year = int(published[:4]) if published[:4].isdigit() else None
@@ -120,22 +121,25 @@ def _parse_arxiv_xml(xml_text: str) -> list[Paper]:
                 pdf_url = link.get("href") or ""
                 break
         arxiv_id = url.rsplit("/abs/", 1)[-1] if url else ""
-        papers.append(Paper(
-            id=0,
-            title=title,
-            authors=[a for a in authors if a],
-            year=year,
-            venue="arXiv",
-            abstract=abstract or None,
-            url=url or None,
-            dedupe_key=dedupe_key(title, year),
-            metadata={"source": "arxiv", "arxiv_id": arxiv_id, "pdf_url": pdf_url},
-        ))
+        papers.append(
+            Paper(
+                id=0,
+                title=title,
+                authors=[a for a in authors if a],
+                year=year,
+                venue="arXiv",
+                abstract=abstract or None,
+                url=url or None,
+                dedupe_key=dedupe_key(title, year),
+                metadata={"source": "arxiv", "arxiv_id": arxiv_id, "pdf_url": pdf_url},
+            )
+        )
     return papers
 
 
-def arxiv_search(query: str, settings: Settings, client: httpx.Client | None = None,
-                 max_results: int = 50) -> list[Paper]:
+def arxiv_search(
+    query: str, settings: Settings, client: httpx.Client | None = None, max_results: int = 50
+) -> list[Paper]:
     """arXiv 检索。
 
     传输层说明（实测 2026-09-19）：arXiv 的 WAF 会按客户端指纹拦截——httpx 发起的
@@ -144,8 +148,9 @@ def arxiv_search(query: str, settings: Settings, client: httpx.Client | None = N
     """
     from urllib.parse import quote
 
+    search_query = f'all:"{query}"'
     url = (
-        f"{settings.arxiv_api}?search_query={quote(f'all:\"{query}\"')}"
+        f"{settings.arxiv_api}?search_query={quote(search_query)}"
         f"&start=0&max_results={max_results}&sortBy=relevance"
     )
     if client is not None:
@@ -160,10 +165,13 @@ def arxiv_search(query: str, settings: Settings, client: httpx.Client | None = N
 
 
 # ---------- Semantic Scholar ----------
-def semantic_scholar_search(query: str, settings: Settings, client: httpx.Client | None = None,
-                            max_results: int = 50) -> list[Paper]:
+def semantic_scholar_search(
+    query: str, settings: Settings, client: httpx.Client | None = None, max_results: int = 50
+) -> list[Paper]:
     with _own(settings, client) as c:
-        headers = {"x-api-key": settings.semantic_scholar_key} if settings.semantic_scholar_key else {}
+        headers = (
+            {"x-api-key": settings.semantic_scholar_key} if settings.semantic_scholar_key else {}
+        )
         resp = _get_with_retry(
             c,
             f"{settings.semantic_scholar_api.rstrip('/')}/paper/search",
@@ -176,27 +184,29 @@ def semantic_scholar_search(query: str, settings: Settings, client: httpx.Client
         )
         resp.raise_for_status()
         papers: list[Paper] = []
-        for item in (resp.json().get("data") or []):
+        for item in resp.json().get("data") or []:
             title = (item.get("title") or "").strip()
             if not title:
                 continue
             ext = item.get("externalIds") or {}
-            papers.append(Paper(
-                id=0,
-                title=re.sub(r"\s+", " ", title),
-                authors=[a.get("name", "") for a in item.get("authors") or []],
-                year=item.get("year"),
-                venue=item.get("venue") or None,
-                abstract=item.get("abstract"),
-                url=item.get("url"),
-                dedupe_key=dedupe_key(title, item.get("year")),
-                metadata={
-                    "source": "semantic_scholar",
-                    "s2_id": item.get("paperId"),
-                    "doi": ext.get("DOI"),
-                    "arxiv_id": ext.get("ArXiv"),
-                },
-            ))
+            papers.append(
+                Paper(
+                    id=0,
+                    title=re.sub(r"\s+", " ", title),
+                    authors=[a.get("name", "") for a in item.get("authors") or []],
+                    year=item.get("year"),
+                    venue=item.get("venue") or None,
+                    abstract=item.get("abstract"),
+                    url=item.get("url"),
+                    dedupe_key=dedupe_key(title, item.get("year")),
+                    metadata={
+                        "source": "semantic_scholar",
+                        "s2_id": item.get("paperId"),
+                        "doi": ext.get("DOI"),
+                        "arxiv_id": ext.get("ArXiv"),
+                    },
+                )
+            )
         logger.info("Semantic Scholar 检索 {}: {} 篇", query, len(papers))
         return papers
 
@@ -214,28 +224,48 @@ def _parse_pubmed_abstracts(xml_text: str) -> dict[str, str | None]:
     return out
 
 
-def pubmed_search(query: str, settings: Settings, client: httpx.Client | None = None,
-                  max_results: int = 50) -> list[Paper]:
+def pubmed_search(
+    query: str, settings: Settings, client: httpx.Client | None = None, max_results: int = 50
+) -> list[Paper]:
     base = settings.pubmed_api.rstrip("/")
     with _own(settings, client) as c:
-        r1 = _get_with_retry(c, f"{base}/esearch.fcgi", params={
-            "db": "pubmed", "term": query, "retmax": max_results,
-            "retmode": "json", "sort": "relevance",
-        })
+        r1 = _get_with_retry(
+            c,
+            f"{base}/esearch.fcgi",
+            params={
+                "db": "pubmed",
+                "term": query,
+                "retmax": max_results,
+                "retmode": "json",
+                "sort": "relevance",
+            },
+        )
         r1.raise_for_status()
         ids = (r1.json().get("esearchresult") or {}).get("idlist") or []
         if not ids:
             return []
 
-        r2 = _get_with_retry(c, f"{base}/esummary.fcgi", params={
-            "db": "pubmed", "id": ",".join(ids), "retmode": "json",
-        })
+        r2 = _get_with_retry(
+            c,
+            f"{base}/esummary.fcgi",
+            params={
+                "db": "pubmed",
+                "id": ",".join(ids),
+                "retmode": "json",
+            },
+        )
         r2.raise_for_status()
         summary = r2.json().get("result") or {}
 
-        r3 = _get_with_retry(c, f"{base}/efetch.fcgi", params={
-            "db": "pubmed", "id": ",".join(ids), "retmode": "xml",
-        })
+        r3 = _get_with_retry(
+            c,
+            f"{base}/efetch.fcgi",
+            params={
+                "db": "pubmed",
+                "id": ",".join(ids),
+                "retmode": "xml",
+            },
+        )
         r3.raise_for_status()
         abstracts = _parse_pubmed_abstracts(r3.text)
 
@@ -252,17 +282,19 @@ def pubmed_search(query: str, settings: Settings, client: httpx.Client | None = 
             for ai in item.get("articleids") or []:
                 if ai.get("idtype") == "doi":
                     doi = ai.get("value") or ""
-            papers.append(Paper(
-                id=0,
-                title=title,
-                authors=authors,
-                year=year,
-                venue=item.get("source") or None,
-                abstract=abstracts.get(pmid),
-                url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
-                dedupe_key=dedupe_key(title, year),
-                metadata={"source": "pubmed", "pmid": pmid, "doi": doi},
-            ))
+            papers.append(
+                Paper(
+                    id=0,
+                    title=title,
+                    authors=authors,
+                    year=year,
+                    venue=item.get("source") or None,
+                    abstract=abstracts.get(pmid),
+                    url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                    dedupe_key=dedupe_key(title, year),
+                    metadata={"source": "pubmed", "pmid": pmid, "doi": doi},
+                )
+            )
         logger.info("PubMed 检索 {}: {} 篇", query, len(papers))
         return papers
 
@@ -273,11 +305,21 @@ _SOURCES = {
     "semantic_scholar": semantic_scholar_search,
     "pubmed": pubmed_search,
 }
-SOURCE_ALIASES = {"arxiv": "arxiv", "s2": "semantic_scholar", "semantic_scholar": "semantic_scholar", "pubmed": "pubmed"}
+SOURCE_ALIASES = {
+    "arxiv": "arxiv",
+    "s2": "semantic_scholar",
+    "semantic_scholar": "semantic_scholar",
+    "pubmed": "pubmed",
+}
 
 
-def search_all(query: str, settings: Settings, sources: list[str] | tuple[str, ...] = ("arxiv",),
-               max_results: int = 50, client: httpx.Client | None = None) -> tuple[list[Paper], dict]:
+def search_all(
+    query: str,
+    settings: Settings,
+    sources: list[str] | tuple[str, ...] = ("arxiv",),
+    max_results: int = 50,
+    client: httpx.Client | None = None,
+) -> tuple[list[Paper], dict]:
     """多源检索 + 跨源去重，返回 (papers, errors)。单源失败不影响其他源。"""
     papers: list[Paper] = []
     seen: set[str] = set()
@@ -292,8 +334,9 @@ def search_all(query: str, settings: Settings, sources: list[str] | tuple[str, .
                 # arXiv 在共享 client 存在时也注入之（测试 MockTransport 场景）；
                 # 真实流量下 shared client 仅用于 S2/PubMed，arXiv 走 urllib（见 arxiv_search）
                 source_client = client if name == "arxiv" else c
-                found = _SOURCES[name](query, settings, client=source_client,
-                                       max_results=max_results)
+                found = _SOURCES[name](
+                    query, settings, client=source_client, max_results=max_results
+                )
             except Exception as exc:
                 errors[name] = f"{type(exc).__name__}: {exc}"
                 logger.warning("检索 {} 失败: {}", name, exc)
